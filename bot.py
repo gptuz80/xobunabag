@@ -7,7 +7,7 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message
 # Telegram hisob ma'lumotlari
 API_ID = int(os.environ.get("API_ID", "34781111"))
 API_HASH = os.environ.get("API_HASH", "f8d801388904eba3bbc892123698c928")
-PHONE_NUMBER = os.environ.get("PHONE_NUMBER", "+8801842594487")  # Sizning telefon raqamingiz
+PHONE_NUMBER = os.environ.get("PHONE_NUMBER", "+8801594487")  # Sizning telefon raqamingiz
 SESSION_NAME = "user_session"
 
 # Bot tokeni
