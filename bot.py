@@ -1,6 +1,5 @@
 import asyncio
 import sqlite3
-from datetime import datetime
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message
 import config
@@ -47,7 +46,8 @@ async def start_command(client, message: Message):
 
 async def show_main_menu(client, chat_id, user_id):
     cursor.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,))
-    balance = cursor.fetchone()[0]
+    result = cursor.fetchone()
+    balance = result[0] if result else 0
     
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("💡 Obuna bolidim", callback_data="check_sub")],
@@ -133,7 +133,9 @@ async def show_stats(client, callback_query):
     user_id = callback_query.from_user.id
     
     cursor.execute("SELECT balance, total_subscribed FROM users WHERE user_id = ?", (user_id,))
-    balance, total_subs = cursor.fetchone()
+    result = cursor.fetchone()
+    balance = result[0] if result else 0
+    total_subs = result[1] if result else 0
     
     stats_text = (
         f"📊 **Statistika**\n\n"
@@ -153,14 +155,15 @@ async def show_stats(client, callback_query):
 # Referal bo'limi
 @app.on_callback_query(filters.regex("referral"))
 async def show_referral(client, callback_query):
+    user_id = callback_query.from_user.id
     referral_text = (
-        "👥 **Referal**\n\n"
-        "🔗 **Obuna bo'lish**\n"
-        "• Gurunga odam qo'shish\n"
-        "• Topshiriqlar\n"
-        "• Post ko'rish\n"
-        "• Bonus\n\n"
-        "Referal havolangiz: `https://t.me/your_bot?start=ref_{user_id}`"
+        f"👥 **Referal**\n\n"
+        f"🔗 **Obuna bo'lish**\n"
+        f"• Gurunga odam qo'shish\n"
+        f"• Topshiriqlar\n"
+        f"• Post ko'rish\n"
+        f"• Bonus\n\n"
+        f"Referal havolangiz: `https://t.me/{(await app.get_me()).username}?start=ref_{user_id}`"
     )
     
     keyboard = InlineKeyboardMarkup([
@@ -215,6 +218,11 @@ async def list_channels(client, message: Message):
     
     await message.reply(text)
 
-if __name__ == "__main__":
+async def main():
+    await app.start()
     print("Bot ishga tushdi...")
-    app.run()
+    await idle()
+    await app.stop()
+
+if __name__ == "__main__":
+    app.run(main())
