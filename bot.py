@@ -1,240 +1,271 @@
 import asyncio
 import sqlite3
 import os
-from pyrogram import Client, filters, idle
+from pyrogram import Client
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message
 
-# Environment variables dan ma'lumot olish
+# Telegram hisob ma'lumotlari
 API_ID = int(os.environ.get("API_ID", "34781111"))
 API_HASH = os.environ.get("API_HASH", "f8d801388904eba3bbc892123698c928")
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8573440155:AAG2oHadY9thbvfRIYpIBMPcwhL9iw_hVL4")
-ADMIN_ID = int(os.environ.get("ADMIN_ID", "7902540547"))
+PHONE_NUMBER = os.environ.get("PHONE_NUMBER", "+8801842594487")  # Sizning telefon raqamingiz
+SESSION_NAME = "user_session"
 
-# SQLite bazasini sozlash
-conn = sqlite3.connect('subbot.db', check_same_thread=False)
+# Bot tokeni
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8573440155:AAG2oHadY9thbvfRIYpIBMPcwhL9iw_hVL4")
+
+# User client (sizning hisobingiz orqali)
+user_client = Client(
+    name=SESSION_NAME,
+    api_id=API_ID,
+    api_hash=API_HASH,
+    phone_number=PHONE_NUMBER
+)
+
+# Bot client
+bot_client = Client(
+    "obuna_bot",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN
+)
+
+# Database setup
+conn = sqlite3.connect('obuna_bot.db', check_same_thread=False)
 cursor = conn.cursor()
 
-# Jadval yaratish
+# Tables
+cursor.execute('''CREATE TABLE IF NOT EXISTS tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel_link TEXT,
+    channel_id TEXT,
+    points INTEGER DEFAULT 1,
+    completed INTEGER DEFAULT 0,
+    user_id INTEGER
+)''')
+
 cursor.execute('''CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
+    username TEXT,
     balance INTEGER DEFAULT 0,
-    total_subscribed INTEGER DEFAULT 0
-)''')
-
-cursor.execute('''CREATE TABLE IF NOT EXISTS channels (
-    channel_id TEXT PRIMARY KEY,
-    channel_link TEXT,
-    points INTEGER DEFAULT 1,
-    active BOOLEAN DEFAULT 1
-)''')
-
-cursor.execute('''CREATE TABLE IF NOT EXISTS user_channels (
-    user_id INTEGER,
-    channel_id TEXT,
-    subscribed BOOLEAN DEFAULT 0,
-    FOREIGN KEY(user_id) REFERENCES users(user_id),
-    FOREIGN KEY(channel_id) REFERENCES channels(channel_id)
+    total_tasks INTEGER DEFAULT 0,
+    completed_tasks INTEGER DEFAULT 0
 )''')
 conn.commit()
 
-app = Client("sub_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+# Store for current tasks
+user_tasks = {}
 
-# Start komandasi
-@app.on_message(filters.command("start"))
-async def start_command(client, message: Message):
-    user_id = message.from_user.id
-    
-    # Foydalanuvchini bazaga qo'shish
-    cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
-    conn.commit()
-    
-    await show_main_menu(client, message.chat.id, user_id)
-
-async def show_main_menu(client, chat_id, user_id):
-    cursor.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,))
-    result = cursor.fetchone()
-    balance = result[0] if result else 0
-    
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("💡 Obuna bolidim", callback_data="check_sub")],
-        [InlineKeyboardButton("📊 Statistika", callback_data="stats")],
-        [InlineKeyboardButton("👥 Referal", callback_data="referral")],
-        [InlineKeyboardButton("🔙 Orqaga", callback_data="back_main")]
-    ])
-    
-    await client.send_message(
-        chat_id,
-        f"**X Obunachi [Bot]**\n\n"
-        f"Balansingiz: **{balance} P**\n\n"
-        f"Kanalga obuna bo'ling va «💡️ Obuna bolidim» tugmasini bosing.\n"
-        f"Har bir kanalga obuna bo'lgangiz uchun 1 P beriladi.",
-        reply_markup=keyboard
-    )
-
-# Kanallarni tekshirish va yangi kanal ko'rsatish
-@app.on_callback_query(filters.regex("check_sub"))
-async def check_subscription(client, callback_query):
-    user_id = callback_query.from_user.id
-    
-    # Obuna bo'lmagan kanalni topish
-    cursor.execute('''SELECT c.channel_id, c.channel_link 
-                    FROM channels c 
-                    LEFT JOIN user_channels uc ON c.channel_id = uc.channel_id AND uc.user_id = ?
-                    WHERE c.active = 1 AND (uc.subscribed IS NULL OR uc.subscribed = 0)
-                    LIMIT 1''', (user_id,))
-    
-    channel = cursor.fetchone()
-    
-    if not channel:
-        await callback_query.answer("Barcha kanallarga obuna bo'lib bo'ldingiz!", show_alert=True)
-        return
-    
-    channel_id, channel_link = channel
-    
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📢 Kanalga o'tish", url=channel_link)],
-        [InlineKeyboardButton("✅ Obuna bolidim", callback_data=f"confirm_{channel_id}")]
-    ])
-    
-    await callback_query.message.edit_text(
-        f"**ID Raqami: {channel_id[:6]}**\n"
-        f"**Kanal:** {channel_link}\n\n"
-        f"Kanalga obuna bo'ling va «✅ Obuna bolidim» tugmasini bosing.\n"
-        f"Kanalga obuna bo'lganingiz uchun 1 P beriladi.",
-        reply_markup=keyboard
-    )
-    await callback_query.answer()
-
-# Obunani tasdiqlash
-@app.on_callback_query(filters.regex(r"confirm_"))
-async def confirm_subscription(client, callback_query):
-    user_id = callback_query.from_user.id
-    channel_id = callback_query.data.split("_")[1]
-    
+async def join_channel(channel_link):
+    """Kanalga obuna bo'lish"""
     try:
-        # Foydalanuvchi kanalga obuna ekanligini tekshirish
-        user = await app.get_chat_member(channel_id, user_id)
+        # Get channel entity
+        channel = await user_client.get_chat(channel_link)
         
-        if user.status in ["member", "administrator", "creator"]:
-            # Obunani bazaga yozish
-            cursor.execute("INSERT OR REPLACE INTO user_channels (user_id, channel_id, subscribed) VALUES (?, ?, 1)",
-                          (user_id, channel_id))
-            
-            # Balansni oshirish
-            cursor.execute("UPDATE users SET balance = balance + 1, total_subscribed = total_subscribed + 1 WHERE user_id = ?",
-                          (user_id,))
-            conn.commit()
-            
-            await callback_query.answer("Obuna muvaffaqiyatli tasdiqlandi! +1 P", show_alert=True)
-            await check_subscription(client, callback_query)
-        else:
-            await callback_query.answer("Siz hali kanalga obuna bo'lmagansiz!", show_alert=True)
-            
+        # Join channel
+        await user_client.join_chat(channel_link)
+        print(f"Obuna bo'lindi: {channel_link}")
+        
+        # Check if successfully joined
+        member = await user_client.get_chat_member(channel.id, "me")
+        if member.status in ["member", "administrator", "creator"]:
+            return True, channel.id
+        return False, None
+        
     except Exception as e:
-        await callback_query.answer("Xatolik yuz berdi. Iltimos, kanalga obuna bo'lganingizni tekshiring.", show_alert=True)
+        print(f"Xatolik: {e}")
+        return False, None
 
-# Statistika
-@app.on_callback_query(filters.regex("stats"))
-async def show_stats(client, callback_query):
-    user_id = callback_query.from_user.id
-    
-    cursor.execute("SELECT balance, total_subscribed FROM users WHERE user_id = ?", (user_id,))
-    result = cursor.fetchone()
-    balance = result[0] if result else 0
-    total_subs = result[1] if result else 0
-    
-    stats_text = (
-        f"📊 **Statistika**\n\n"
-        f"👤 User ID: `{user_id}`\n"
-        f"💰 Balans: **{balance} P**\n"
-        f"✅ Obuna bo'lgan kanallar: **{total_subs} ta**\n"
-        f"📈 Umumiy obunachilar: **13,260**"
-    )
-    
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔙 Orqaga", callback_data="back_main")]
-    ])
-    
-    await callback_query.message.edit_text(stats_text, reply_markup=keyboard)
-    await callback_query.answer()
-
-# Referal bo'limi
-@app.on_callback_query(filters.regex("referral"))
-async def show_referral(client, callback_query):
-    user_id = callback_query.from_user.id
-    bot_username = (await app.get_me()).username
-    referral_text = (
-        f"👥 **Referal**\n\n"
-        f"🔗 **Obuna bo'lish**\n"
-        f"• Gurunga odam qo'shish\n"
-        f"• Topshiriqlar\n"
-        f"• Post ko'rish\n"
-        f"• Bonus\n\n"
-        f"Referal havolangiz: `https://t.me/{bot_username}?start=ref_{user_id}`"
-    )
-    
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔙 Orqaga", callback_data="back_main")]
-    ])
-    
-    await callback_query.message.edit_text(referral_text, reply_markup=keyboard)
-    await callback_query.answer()
-
-# Orqaga tugmasi
-@app.on_callback_query(filters.regex("back_main"))
-async def back_to_main(client, callback_query):
-    await show_main_menu(client, callback_query.message.chat.id, callback_query.from_user.id)
-    await callback_query.answer()
-
-# ADMIN: Yangi kanal qo'shish
-@app.on_message(filters.command("add_channel") & filters.user(ADMIN_ID))
-async def add_channel(client, message: Message):
+async def leave_channel(channel_id):
+    """Kanaldan chiqish"""
     try:
-        args = message.text.split()
-        if len(args) < 2:
-            await message.reply("Foydalanish: /add_channel <channel_link>")
-            return
-            
-        channel_link = args[1]
+        await user_client.leave_chat(channel_id)
+        print(f"Kanaldan chiqildi: {channel_id}")
+        return True
+    except:
+        return False
+
+# Bot handlers
+@bot_client.on_message()
+async def handle_messages(client, message):
+    if message.text and message.text.startswith('/start'):
+        user_id = message.from_user.id
+        username = message.from_user.username or ""
         
-        # Kanal ID sini olish
+        # Save user to database
+        cursor.execute('''INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)''', 
+                      (user_id, username))
+        cursor.execute('''UPDATE users SET username = ? WHERE user_id = ?''', 
+                      (username, user_id))
+        conn.commit()
+        
+        # Get user stats
+        cursor.execute('''SELECT balance, total_tasks, completed_tasks FROM users WHERE user_id = ?''', 
+                      (user_id,))
+        stats = cursor.fetchone()
+        balance = stats[0] if stats else 0
+        total_tasks = stats[1] if stats else 0
+        completed_tasks = stats[2] if stats else 0
+        
+        # Create task for user
+        task_id = 574027
+        task_name = "Waka_stock"
+        task_total = 25
+        task_done = 19
+        task_username = "@waka_stock_org"
+        
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📢 Kanalga o'tish", url="https://t.me/waka_stock_org")],
+            [InlineKeyboardButton("😊 Obuna bolidim", callback_data="subscribe_confirm")]
+        ])
+        
+        await message.reply(
+            f"**X Obunachi [Bot]**\n"
+            f"13 260 monthly users\n"
+            f"\n---\n"
+            f"**ID**\n"
+            f"ID Raqami: {task_id}\n"
+            f"**Nomi:** {task_name}\n"
+            f"**Buyurtma soni:** {task_total}\n"
+            f"**Bajarildi:** {task_done}\n"
+            f"**Usernamesi:** {task_username}\n"
+            f"\n---\n"
+            f"Kanalga obuna bo'ling va 😊 Obuna bolidim\n"
+            f"tugmasini bosing.\n"
+            f"Kanalga obuna bo'lganingiz uchun 1 P beriladi\n"
+            f"\n---\n"
+            f"**Balans:** {balance} P\n"
+            f"**Bajarilgan:** {completed_tasks}/{total_tasks}\n",
+            reply_markup=keyboard
+        )
+
+@bot_client.on_callback_query()
+async def handle_callbacks(client, callback_query):
+    user_id = callback_query.from_user.id
+    data = callback_query.data
+    
+    if data == "subscribe_confirm":
+        # Join channel using user account
+        channel_link = "https://t.me/waka_stock_org"
+        
         try:
-            chat = await app.get_chat(channel_link)
-            channel_id = str(chat.id)
+            # Attempt to join channel
+            success, channel_id = await join_channel(channel_link)
             
-            cursor.execute("INSERT OR REPLACE INTO channels (channel_id, channel_link) VALUES (?, ?)",
-                          (channel_id, channel_link))
-            conn.commit()
-            
-            await message.reply(f"✅ Kanal qo'shildi!\nID: {channel_id}\nLink: {channel_link}")
+            if success:
+                # Update user balance
+                cursor.execute('''UPDATE users SET 
+                                balance = balance + 1,
+                                total_tasks = total_tasks + 1,
+                                completed_tasks = completed_tasks + 1 
+                                WHERE user_id = ?''', (user_id,))
+                conn.commit()
+                
+                # Get updated stats
+                cursor.execute('''SELECT balance, completed_tasks FROM users WHERE user_id = ?''', 
+                             (user_id,))
+                stats = cursor.fetchone()
+                new_balance = stats[0] if stats else 1
+                completed = stats[1] if stats else 1
+                
+                await callback_query.answer(
+                    f"✅ Obuna bo'ldingiz! +1 P\n"
+                    f"Yangı balans: {new_balance} P\n"
+                    f"Bajarilgan: {completed} ta",
+                    show_alert=True
+                )
+                
+                # Create next task
+                next_task_id = 574028
+                next_task_name = "Next_Channel"
+                next_task_total = 30
+                next_task_done = completed + 1
+                next_task_username = "@next_channel"
+                
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📢 Kanalga o'tish", url="https://t.me/next_channel")],
+                    [InlineKeyboardButton("😊 Obuna bolidim", callback_data="subscribe_next")]
+                ])
+                
+                await callback_query.message.edit_text(
+                    f"**X Obunachi [Bot]**\n"
+                    f"13 260 monthly users\n"
+                    f"\n---\n"
+                    f"**ID**\n"
+                    f"ID Raqami: {next_task_id}\n"
+                    f"**Nomi:** {next_task_name}\n"
+                    f"**Buyurtma soni:** {next_task_total}\n"
+                    f"**Bajarildi:** {next_task_done}\n"
+                    f"**Usernamesi:** {next_task_username}\n"
+                    f"\n---\n"
+                    f"Kanalga obuna bo'ling va 😊 Obuna bolidim\n"
+                    f"tugmasini bosing.\n"
+                    f"Kanalga obuna bo'lganingiz uchun 1 P beriladi\n"
+                    f"\n---\n"
+                    f"**Balans:** {new_balance} P\n"
+                    f"**Bajarilgan:** {completed}/{next_task_total}\n",
+                    reply_markup=keyboard
+                )
+                
+                # Store task for next callback
+                user_tasks[user_id] = {
+                    "next_channel": "https://t.me/next_channel",
+                    "task_number": next_task_id
+                }
+                
+                # Auto-leave after some time (optional)
+                # await asyncio.sleep(300)  # 5 minutes
+                # await leave_channel(channel_id)
+                
+            else:
+                await callback_query.answer(
+                    "❌ Obuna bo'lishda xatolik. Qayta urinib ko'ring.",
+                    show_alert=True
+                )
+                
         except Exception as e:
-            await message.reply(f"Xatolik: {str(e)}")
+            await callback_query.answer(
+                f"Xatolik: {str(e)}",
+                show_alert=True
+            )
+    
+    elif data == "subscribe_next":
+        # Handle next subscription
+        if user_id in user_tasks:
+            channel_link = user_tasks[user_id]["next_channel"]
+            success, _ = await join_channel(channel_link)
             
-    except Exception as e:
-        await message.reply(f"Umumiy xatolik: {str(e)}")
-
-# ADMIN: Kanallar ro'yxati
-@app.on_message(filters.command("list_channels") & filters.user(ADMIN_ID))
-async def list_channels(client, message: Message):
-    cursor.execute("SELECT channel_id, channel_link, active FROM channels")
-    channels = cursor.fetchall()
-    
-    if not channels:
-        await message.reply("📂 Kanallar ro'yxati bo'sh")
-        return
-    
-    text = "📋 **Kanallar ro'yxati:**\n\n"
-    for chan_id, link, active in channels:
-        status = "✅" if active else "❌"
-        text += f"{status} {link}\nID: `{chan_id}`\n\n"
-    
-    await message.reply(text)
+            if success:
+                cursor.execute('''UPDATE users SET 
+                                balance = balance + 1,
+                                completed_tasks = completed_tasks + 1 
+                                WHERE user_id = ?''', (user_id,))
+                conn.commit()
+                
+                await callback_query.answer(
+                    "✅ Keyingi kanalga obuna bo'ldingiz! +1 P",
+                    show_alert=True
+                )
 
 async def main():
-    await app.start()
-    print("Bot ishga tushdi...")
-    await idle()
-    await app.stop()
+    # Start both clients
+    print("User hisobini ishga tushiramiz...")
+    await user_client.start()
+    
+    print("Botni ishga tushiramiz...")
+    await bot_client.start()
+    
+    print("Bot ishga tushdi. @BotFather dan olingan bot token orqali botga kirishingiz mumkin.")
+    
+    # Keep running
+    await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    app.run(main())
+    # Create required directories
+    if not os.path.exists("sessions"):
+        os.makedirs("sessions")
+    
+    # Run the bot
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nBot to'xtatildi.")
