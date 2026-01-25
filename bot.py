@@ -1,8 +1,14 @@
 import asyncio
 import sqlite3
-from pyrogram import Client, filters
+import os
+from pyrogram import Client, filters, idle
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message
-import config
+
+# Environment variables dan ma'lumot olish
+API_ID = int(os.environ.get("API_ID", "34781111"))
+API_HASH = os.environ.get("API_HASH", "f8d801388904eba3bbc892123698c928")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8573440155:AAG2oHadY9thbvfRIYpIBMPcwhL9iw_hVL4")
+ADMIN_ID = int(os.environ.get("ADMIN_ID", "7902540547"))
 
 # SQLite bazasini sozlash
 conn = sqlite3.connect('subbot.db', check_same_thread=False)
@@ -31,7 +37,7 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS user_channels (
 )''')
 conn.commit()
 
-app = Client("sub_bot", api_id=config.API_ID, api_hash=config.API_HASH, bot_token=config.BOT_TOKEN)
+app = Client("sub_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 # Start komandasi
 @app.on_message(filters.command("start"))
@@ -156,6 +162,7 @@ async def show_stats(client, callback_query):
 @app.on_callback_query(filters.regex("referral"))
 async def show_referral(client, callback_query):
     user_id = callback_query.from_user.id
+    bot_username = (await app.get_me()).username
     referral_text = (
         f"👥 **Referal**\n\n"
         f"🔗 **Obuna bo'lish**\n"
@@ -163,7 +170,7 @@ async def show_referral(client, callback_query):
         f"• Topshiriqlar\n"
         f"• Post ko'rish\n"
         f"• Bonus\n\n"
-        f"Referal havolangiz: `https://t.me/{(await app.get_me()).username}?start=ref_{user_id}`"
+        f"Referal havolangiz: `https://t.me/{bot_username}?start=ref_{user_id}`"
     )
     
     keyboard = InlineKeyboardMarkup([
@@ -180,10 +187,15 @@ async def back_to_main(client, callback_query):
     await callback_query.answer()
 
 # ADMIN: Yangi kanal qo'shish
-@app.on_message(filters.command("add_channel") & filters.user(config.ADMIN_ID))
+@app.on_message(filters.command("add_channel") & filters.user(ADMIN_ID))
 async def add_channel(client, message: Message):
     try:
-        _, channel_link = message.text.split()
+        args = message.text.split()
+        if len(args) < 2:
+            await message.reply("Foydalanish: /add_channel <channel_link>")
+            return
+            
+        channel_link = args[1]
         
         # Kanal ID sini olish
         try:
@@ -198,11 +210,11 @@ async def add_channel(client, message: Message):
         except Exception as e:
             await message.reply(f"Xatolik: {str(e)}")
             
-    except ValueError:
-        await message.reply("Foydalanish: /add_channel <channel_link>")
+    except Exception as e:
+        await message.reply(f"Umumiy xatolik: {str(e)}")
 
 # ADMIN: Kanallar ro'yxati
-@app.on_message(filters.command("list_channels") & filters.user(config.ADMIN_ID))
+@app.on_message(filters.command("list_channels") & filters.user(ADMIN_ID))
 async def list_channels(client, message: Message):
     cursor.execute("SELECT channel_id, channel_link, active FROM channels")
     channels = cursor.fetchall()
