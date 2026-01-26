@@ -375,10 +375,14 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "not_started": "❌ Session yo'q",
     }
 
+    default_text = "Noma'lum"
+    holat = status_text.get(status, default_text)
+
     await update.message.reply_text(
-        f"📊 <b>Holat:</b> {status_text.get(status, \"Noma'lum\")}",
+        f"📊 <b>Holat:</b> {holat}",
         parse_mode="HTML"
     )
+
 
 
 def main():
