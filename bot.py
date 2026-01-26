@@ -1,496 +1,433 @@
 import asyncio
-import sqlite3
 import os
-from pyrogram import Client
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message
-from pyrogram.errors import SessionPasswordNeeded, PhoneCodeInvalid, PhoneCodeExpired
+import sys
+from telethon import TelegramClient, events
+from telethon.tl.functions.channels import JoinChannelRequest
+from telethon.tl.functions.messages import ImportChatInviteRequest
+from telethon.tl.types import Message
+from telethon.errors import SessionPasswordNeededError, PhoneCodeInvalidError
 
-# Telegram hisob ma'lumotlari
-API_ID = int(os.environ.get("API_ID", "34781111"))
-API_HASH = os.environ.get("API_HASH", "f8d801388904eba3bbc892123698c928")
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8573440155:AAG2oHadY9thbvfRIYpIBMPcwhL9iw_hVL4")
+# Bot token
+BOT_TOKEN = "8573440155:AAG2oHadY9thbvfRIYpIBMPcwhL9iw_hVL4"
+
+# Telegram API
+API_ID = 20464354
+API_HASH = "c6fa656e333fd6c9d5b9867daf028ea1"
+
+# Bot username
+BOT_USERNAME = "Obunachi_X"
 
 # Global o'zgaruvchilar
-user_client = None
-user_states = {}  # {chat_id: 'waiting_phone', 'waiting_code', 'waiting_password', 'active'}
-pending_sessions = {}  # {chat_id: {'phone': phone, 'code_hash': code_hash, 'client': client}}
+client = None
+user_states = {}  # {user_id: 'waiting_phone', 'waiting_code', 'waiting_password', 'active'}
+pending_sessions = {}  # {user_id: {'phone': phone, 'code_hash': code_hash}}
 
-# Bot client
-bot_client = Client(
-    "obuna_bot",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    bot_token=BOT_TOKEN
-)
+# Bot uchun import
+try:
+    from telegram import Bot, Update, InlineKeyboardMarkup, InlineKeyboardButton
+    from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext, CallbackQueryHandler
+except ImportError:
+    print("Installing required packages...")
+    import subprocess
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "python-telegram-bot==20.3"])
+    from telegram import Bot, Update, InlineKeyboardMarkup, InlineKeyboardButton
+    from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext, CallbackQueryHandler
 
-# Database setup
-conn = sqlite3.connect('obuna_bot.db', check_same_thread=False)
-cursor = conn.cursor()
+# Telethon client yaratish
+def create_telethon_client(phone):
+    session_name = f"sessions/session_{phone.replace('+', '')}"
+    return TelegramClient(session_name, API_ID, API_HASH)
 
-# Tables
-cursor.execute('''CREATE TABLE IF NOT EXISTS users (
-    user_id INTEGER PRIMARY KEY,
-    username TEXT,
-    balance INTEGER DEFAULT 0,
-    total_tasks INTEGER DEFAULT 0,
-    completed_tasks INTEGER DEFAULT 0
-)''')
+# Tugmalarni bosish funksiyasi
+async def click_buttons(message: Message):
+    results = []
+    if message.buttons:
+        for row in message.buttons:
+            for button in row:
+                # URL tugma (kanal havolasi)
+                url = getattr(button, "url", None)
+                if url:
+                    try:
+                        if "joinchat" in url or "+" in url:
+                            # Invite link (masalan: https://t.me/+xxxx)
+                            invite_hash = url.split("+")[-1]
+                            await client(ImportChatInviteRequest(invite_hash))
+                            results.append(f"✅ Invite orqali obuna bo'ldi: {url}")
+                        else:
+                            # Oddiy kanal (masalan: https://t.me/kanal_nomi)
+                            kanal = url.split("/")[-1]
+                            await client(JoinChannelRequest(kanal))
+                            results.append(f"✅ Kanalga obuna bo'ldi: {kanal}")
+                    except Exception as e:
+                        results.append(f"⚠️ Obuna bo'lmadi: {e}")
 
-cursor.execute('''CREATE TABLE IF NOT EXISTS sessions (
-    phone_number TEXT PRIMARY KEY,
-    session_string TEXT,
-    is_active BOOLEAN DEFAULT 1
-)''')
-conn.commit()
-
-async def start_user_session(phone_number, chat_id):
-    """Yangi session yaratish"""
-    global user_client
+                # Callback tugma (tasdiqlash tugmasi)
+                data = getattr(button, "data", None)
+                if data:
+                    try:
+                        await button.click()
+                        results.append("✅ Tasdiqlash tugmasi bosildi")
+                    except Exception as e:
+                        results.append(f"⚠️ Tasdiqlash tugmasi ishlamadi: {e}")
     
+    return results
+
+# Telegram Bot handlers
+async def start_command(update: Update, context: CallbackContext):
+    user_id = update.effective_user.id
+    user_states[user_id] = 'waiting_phone'
+    
+    await update.message.reply_text(
+        "👋 **Obunachi Botiga xush kelibsiz!**\n\n"
+        "Botni ishga tushirish uchun telefon raqamingizni yuboring:\n"
+        "**Namuna:** `+998901234567`\n\n"
+        "⚠️ **Diqqat:** Bu raqam kanallarga obuna bo'lish uchun ishlatiladi."
+    )
+
+async def handle_phone_number(update: Update, context: CallbackContext):
+    user_id = update.effective_user.id
+    phone = update.message.text.strip()
+    
+    if user_states.get(user_id) != 'waiting_phone':
+        return
+    
+    # Formatni tekshirish
+    if not phone.startswith('+'):
+        phone = '+' + phone
+    
+    await update.message.reply_text(f"📱 **Telefon raqam qabul qilindi:** `{phone}`\n"
+                                   f"Kod so'ralmoqda...")
+    
+    global client
     try:
-        # Avval saqlangan sessionni tekshirish
-        cursor.execute("SELECT session_string FROM sessions WHERE phone_number = ? AND is_active = 1", (phone_number,))
-        session_data = cursor.fetchone()
+        # Telethon client yaratish
+        client = create_telethon_client(phone)
         
-        if session_data:
-            # Saqlangan session orqali ulanish
-            try:
-                session_string = session_data[0]
-                user_client = Client(
-                    name=f"session_{phone_number}",
-                    api_id=API_ID,
-                    api_hash=API_HASH,
-                    session_string=session_string
-                )
-                await user_client.start()
-                print(f"✅ Saqlangan session orqali ulandik: {phone_number}")
-                user_states[chat_id] = 'active'
-                return True, "Muvaffaqiyatli ulandik!"
-            except:
-                # Session eskirgan, yangilash kerak
-                pass
+        # Connect qilish
+        await client.connect()
         
-        # Yangi session yaratish
-        user_client = Client(
-            name=f"session_{phone_number}",
-            api_id=API_ID,
-            api_hash=API_HASH,
-            phone_number=phone_number
-        )
-        
-        # Auth kodini so'rash
-        sent_code = await user_client.send_code(phone_number)
+        # Kod so'rash
+        sent_code = await client.send_code_request(phone)
         code_hash = sent_code.phone_code_hash
         
-        # Ma'lumotlarni saqlash
-        pending_sessions[chat_id] = {
-            'phone': phone_number,
-            'code_hash': code_hash,
-            'client': user_client
+        # Session ma'lumotlarini saqlash
+        pending_sessions[user_id] = {
+            'phone': phone,
+            'code_hash': code_hash
         }
         
-        user_states[chat_id] = 'waiting_code'
+        user_states[user_id] = 'waiting_code'
         
-        await bot_client.send_message(
-            chat_id,
-            f"📱 **Telefon raqam:** `{phone_number}`\n"
+        await update.message.reply_text(
             f"📨 Telegram'dan kelgan **5 xonali kodni** yuboring:\n\n"
             f"⚠️ **Kodni shu formatda yuboring:** `12345`"
         )
         
-        return False, "Kod kutilmoqda"
-        
     except Exception as e:
-        print(f"Xatolik: {e}")
-        return False, f"Xatolik: {str(e)}"
+        await update.message.reply_text(f"❌ Xatolik: {str(e)}")
+        user_states[user_id] = 'waiting_phone'
 
-async def verify_auth_code(chat_id, code):
-    """Auth kodini tekshirish"""
-    if chat_id not in pending_sessions:
-        return False, "Session topilmadi. Qayta /start boshing."
+async def handle_auth_code(update: Update, context: CallbackContext):
+    user_id = update.effective_user.id
+    code = update.message.text.strip()
     
-    session_data = pending_sessions[chat_id]
-    phone_number = session_data['phone']
+    if user_states.get(user_id) != 'waiting_code':
+        return
+    
+    if not code.isdigit() or len(code) != 5:
+        await update.message.reply_text("❌ **Kod 5 xonali raqam bo'lishi kerak!**")
+        return
+    
+    await update.message.reply_text("🔐 **Kod tekshirilmoqda...**")
+    
+    if user_id not in pending_sessions:
+        await update.message.reply_text("❌ Session topilmadi. Qayta /start boshing.")
+        user_states[user_id] = 'waiting_phone'
+        return
+    
+    session_data = pending_sessions[user_id]
+    phone = session_data['phone']
     code_hash = session_data['code_hash']
-    client = session_data['client']
     
     try:
-        # Kodni tekshirish
-        await client.sign_in(
-            phone_number=phone_number,
-            phone_code_hash=code_hash,
-            phone_code=code
-        )
+        # Kod bilan login qilish
+        await client.sign_in(phone=phone, code=code, phone_code_hash=code_hash)
         
-        # Session string ni saqlash
-        session_string = await client.export_session_string()
-        cursor.execute('''INSERT OR REPLACE INTO sessions (phone_number, session_string) VALUES (?, ?)''',
-                     (phone_number, session_string))
-        conn.commit()
+        user_states[user_id] = 'active'
+        del pending_sessions[user_id]
         
-        # Tozalash
-        del pending_sessions[chat_id]
-        user_states[chat_id] = 'active'
-        
-        await bot_client.send_message(
-            chat_id,
+        await update.message.reply_text(
             "✅ **Muvaffaqiyatli kirildi!**\n"
-            "Endi /menu buyrug'i orqali ishni boshlashingiz mumkin."
+            "Endi /menu buyrug'i orqali ishni boshlashingiz mumkin.\n\n"
+            "🤖 Bot endi @Obunachi_X dan xabarlarni kuzatib, avtomatik obuna bo'ladi."
         )
-        return True, "Success"
         
-    except SessionPasswordNeeded:
-        # 2FA paroli kerak
-        user_states[chat_id] = 'waiting_password'
-        await bot_client.send_message(
-            chat_id,
+        # Botga subscribe qilish
+        try:
+            await client(JoinChannelRequest(BOT_USERNAME))
+        except:
+            pass
+        
+        # Avtomatik obuna bo'lishni boshlash
+        asyncio.create_task(start_auto_subscribe(user_id, update))
+        
+    except SessionPasswordNeededError:
+        user_states[user_id] = 'waiting_password'
+        await update.message.reply_text(
             "🔐 **2FA paroli kerak.**\n"
             "Telegram akkauntingizning 2 qadamli autentifikatsiya parolini yuboring:\n\n"
             "⚠️ **Parolni shu formatda yuboring:** `meningparol123`"
         )
-        return False, "2FA required"
         
-    except PhoneCodeInvalid:
-        return False, "❌ **Noto'g'ri kod.** Qayta urinib ko'ring."
-        
-    except PhoneCodeExpired:
-        return False, "❌ **Kod eskirgan.** Yangi kod so'rab qayta urinib ko'ring."
+    except PhoneCodeInvalidError:
+        await update.message.reply_text("❌ **Noto'g'ri kod.** Qayta urinib ko'ring.")
         
     except Exception as e:
-        print(f"Auth xatosi: {e}")
-        del pending_sessions[chat_id]
-        user_states[chat_id] = 'waiting_phone'
-        return False, f"❌ Xatolik: {str(e)}"
+        await update.message.reply_text(f"❌ Xatolik: {str(e)}")
+        user_states[user_id] = 'waiting_phone'
 
-async def verify_2fa_password(chat_id, password):
-    """2FA parolini tekshirish"""
-    if chat_id not in pending_sessions:
-        return False, "Session topilmadi."
+async def handle_2fa_password(update: Update, context: CallbackContext):
+    user_id = update.effective_user.id
+    password = update.message.text.strip()
     
-    session_data = pending_sessions[chat_id]
-    phone_number = session_data['phone']
-    client = session_data['client']
+    if user_states.get(user_id) != 'waiting_password':
+        return
+    
+    await update.message.reply_text("🔒 **Parol tekshirilmoqda...**")
+    
+    if user_id not in pending_sessions:
+        await update.message.reply_text("❌ Session topilmadi.")
+        user_states[user_id] = 'waiting_phone'
+        return
     
     try:
-        await client.check_password(password)
+        # 2FA paroli bilan login qilish
+        await client.sign_in(password=password)
         
-        # Session string ni saqlash
-        session_string = await client.export_session_string()
-        cursor.execute('''INSERT OR REPLACE INTO sessions (phone_number, session_string) VALUES (?, ?)''',
-                     (phone_number, session_string))
-        conn.commit()
+        user_states[user_id] = 'active'
+        del pending_sessions[user_id]
         
-        # Tozalash
-        del pending_sessions[chat_id]
-        user_states[chat_id] = 'active'
-        
-        await bot_client.send_message(
-            chat_id,
+        await update.message.reply_text(
             "✅ **2FA paroli qabul qilindi!**\n"
-            "Endi /menu buyrug'i orqali ishni boshlashingiz mumkin."
+            "Endi /menu buyrug'i orqali ishni boshlashingiz mumkin.\n\n"
+            "🤖 Bot endi @Obunachi_X dan xabarlarni kuzatib, avtomatik obuna bo'ladi."
         )
-        return True, "Success"
+        
+        # Botga subscribe qilish
+        try:
+            await client(JoinChannelRequest(BOT_USERNAME))
+        except:
+            pass
+        
+        # Avtomatik obuna bo'lishni boshlash
+        asyncio.create_task(start_auto_subscribe(user_id, update))
         
     except Exception as e:
-        user_states[chat_id] = 'waiting_password'
-        return False, f"❌ Noto'g'ri parol. Qayta urinib ko'ring: {str(e)}"
+        await update.message.reply_text(f"❌ Noto'g'ri parol. Qayta urinib ko'ring: {str(e)}")
 
-async def join_channel(channel_link):
-    """Kanalga obuna bo'lish"""
-    global user_client
-    
-    if user_client is None:
-        return False, None
-    
+async def start_auto_subscribe(user_id, update):
+    """Avtomatik obuna bo'lishni boshlash"""
     try:
-        # Join channel
-        await user_client.join_chat(channel_link)
-        print(f"✅ Obuna bo'lindi: {channel_link}")
+        # Botdan xabarlarni kuzatish
+        @client.on(events.NewMessage(chats=BOT_USERNAME))
+        async def handler(event):
+            try:
+                results = await click_buttons(event.message)
+                if results:
+                    message = "📋 **Obuna natijalari:**\n\n" + "\n".join(results[:5])
+                    if len(results) > 5:
+                        message += f"\n\n...va yana {len(results)-5} ta natija"
+                    
+                    # Foydalanuvchiga xabar yuborish
+                    try:
+                        bot_app = update.application if update else None
+                        if bot_app:
+                            await bot_app.bot.send_message(
+                                chat_id=user_id,
+                                text=message,
+                                parse_mode='HTML'
+                            )
+                    except:
+                        pass
+                        
+            except Exception as e:
+                print(f"Error in handler: {e}")
         
-        # Check if successfully joined
-        chat = await user_client.get_chat(channel_link)
-        member = await user_client.get_chat_member(chat.id, "me")
-        
-        if member.status in ["member", "administrator", "creator"]:
-            return True, chat.id
-        return False, None
+        await update.message.reply_text(
+            "🔄 **Avtomatik obuna boshlandi!**\n"
+            "Bot endi @Obunachi_X dan kelgan xabarlarda tugmalarni avtomatik bosadi.\n\n"
+            "✅ Kanal havolalari bo'lsa, obuna bo'linadi\n"
+            "✅ Tasdiqlash tugmalari bo'lsa, bosiladi\n\n"
+            "📊 Natijalar sizga yuboriladi."
+        )
         
     except Exception as e:
-        print(f"❌ Xatolik: {e}")
-        return False, None
+        await update.message.reply_text(f"❌ Avtomatik obuna sozlamasida xatolik: {str(e)}")
 
-# Bot handlers
-@bot_client.on_message()
-async def handle_messages(client, message):
-    chat_id = message.chat.id
-    text = message.text or ""
-    user_id = message.from_user.id
+async def menu_command(update: Update, context: CallbackContext):
+    user_id = update.effective_user.id
     
-    print(f"Xabar keldi: {text[:50]}... | State: {user_states.get(chat_id, 'no_state')}")
-    
-    # Start command
-    if text.startswith('/start'):
-        user_states[chat_id] = 'waiting_phone'
-        await message.reply(
-            "👋 **X Obunachi Botiga xush kelibsiz!**\n\n"
-            "Botni ishga tushirish uchun telefon raqamingizni yuboring:\n"
-            "**Namuna:** `+998901234567`\n\n"
-            "⚠️ **Diqqat:** Bu raqam kanallarga obuna bo'lish uchun ishlatiladi."
-        )
+    if user_states.get(user_id) != 'active':
+        await update.message.reply_text("❌ **Avval telefon raqam orqali kirishingiz kerak!**\n"
+                                       "/start bosib qayta urinib ko'ring.")
         return
     
-    # Telefon raqamini qabul qilish
-    elif user_states.get(chat_id) == 'waiting_phone' and ('+' in text or text.replace(' ', '').isdigit()):
-        phone_number = text.strip()
-        
-        # Formatni tekshirish
-        if not phone_number.startswith('+'):
-            phone_number = '+' + phone_number
-        
-        await message.reply(f"📱 **Telefon raqam qabul qilindi:** `{phone_number}`\n"
-                          f"Kod so'ralmoqda...")
-        
-        success, msg = await start_user_session(phone_number, chat_id)
-        if not success and "Kod kutilmoqda" not in msg:
-            await message.reply(f"❌ {msg}")
-        return
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📢 Obuna bolidim", callback_data="subscribe_now")],
+        [InlineKeyboardButton("📊 Status", callback_data="check_status")],
+        [InlineKeyboardButton("🛑 To'xtatish", callback_data="stop_auto")]
+    ])
     
-    # Auth kodini qabul qilish
-    elif user_states.get(chat_id) == 'waiting_code' and text.isdigit() and len(text) == 5:
-        await message.reply("🔐 **Kod tekshirilmoqda...**")
-        success, msg = await verify_auth_code(chat_id, text)
-        
-        if not success:
-            if "2FA required" in msg:
-                return  # 2FA parolini kutish
-            await message.reply(f"❌ {msg}")
-        return
+    await update.message.reply_text(
+        "📱 **Obunachi Bot Menyusi**\n\n"
+        "✅ **Holat:** Faol\n"
+        "🤖 **Bot:** @Obunachi_X ga ulangan\n"
+        "🔗 **Avtomatik obuna:** Yoqilgan\n\n"
+        "Quyidagi tugmalardan foydalaning:",
+        reply_markup=keyboard
+    )
+
+async def button_handler(update: Update, context: CallbackContext):
+    query = update.callback_query
+    user_id = query.from_user.id
+    data = query.data
     
-    # 2FA parolini qabul qilish
-    elif user_states.get(chat_id) == 'waiting_password':
-        await message.reply("🔒 **Parol tekshirilmoqda...**")
-        success, msg = await verify_2fa_password(chat_id, text)
-        
-        if not success:
-            await message.reply(f"❌ {msg}")
-        return
+    await query.answer()
     
-    # Menu command
-    elif text.startswith('/menu'):
-        if user_states.get(chat_id) != 'active':
-            await message.reply("❌ **Avval telefon raqam orqali kirishingiz kerak!**\n"
-                              "/start bosib qayta urinib ko'ring.")
+    if data == "subscribe_now":
+        if user_states.get(user_id) != 'active':
+            await query.edit_message_text("❌ Avval telefon raqam orqali kirishingiz kerak!")
             return
         
-        # Save user to database
-        username = message.from_user.username or ""
-        cursor.execute('''INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)''', 
-                      (user_id, username))
-        cursor.execute('''UPDATE users SET username = ? WHERE user_id = ?''', 
-                      (username, user_id))
-        conn.commit()
-        
-        # Get user stats
-        cursor.execute('''SELECT balance, total_tasks, completed_tasks FROM users WHERE user_id = ?''', 
-                      (user_id,))
-        stats = cursor.fetchone()
-        balance = stats[0] if stats else 0
-        total_tasks = stats[1] if stats else 0
-        completed_tasks = stats[2] if stats else 0
-        
-        # Task ma'lumotlari
-        task_id = 574027
-        task_name = "Waka_stock"
-        task_total = 25
-        task_done = 19
-        task_username = "@waka_stock_org"
-        
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📢 Kanalga o'tish", url="https://t.me/waka_stock_org")],
-            [InlineKeyboardButton("😊 Obuna bolidim", callback_data="subscribe_confirm")]
-        ])
-        
-        await message.reply(
-            f"**X Obunachi [Bot]**\n"
-            f"13 260 monthly users\n\n"
-            f"══════════════════\n"
-            f"**ID Raqami:** {task_id}\n"
-            f"**Nomi:** {task_name}\n"
-            f"**Buyurtma soni:** {task_total}\n"
-            f"**Bajarildi:** {task_done}\n"
-            f"**Usernamesi:** {task_username}\n\n"
-            f"══════════════════\n"
-            f"Kanalga obuna bo'ling va 😊 Obuna bolidim\n"
-            f"tugmasini bosing.\n"
-            f"Kanalga obuna bo'lganingiz uchun **1 P** beriladi\n\n"
-            f"══════════════════\n"
-            f"**Balans:** {balance} P\n"
-            f"**Bajarilgan:** {completed_tasks}/{total_tasks}",
-            reply_markup=keyboard
-        )
-        return
+        # Hozirgi xabarlarni tekshirish
+        try:
+            messages = await client.get_messages(BOT_USERNAME, limit=5)
+            for msg in messages:
+                results = await click_buttons(msg)
+                if results:
+                    await query.edit_message_text(
+                        f"✅ **Obuna jarayoni:**\n\n" + "\n".join(results[:3]),
+                        reply_markup=InlineKeyboardMarkup([
+                            [InlineKeyboardButton("🔄 Yangilash", callback_data="subscribe_now")]
+                        ])
+                    )
+                    return
+            
+            await query.edit_message_text(
+                "❌ Hozircha obuna qiladigan xabar topilmadi.\n"
+                "Bot @Obunachi_X dan yangi xabar kutmoqda.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 Qayta urinish", callback_data="subscribe_now")]
+                ])
+            )
+            
+        except Exception as e:
+            await query.edit_message_text(f"❌ Xatolik: {str(e)}")
     
-    # Status command
-    elif text.startswith('/status'):
-        state = user_states.get(chat_id, 'no_state')
+    elif data == "check_status":
+        status = user_states.get(user_id, 'not_started')
         status_text = {
             'waiting_phone': "📞 Telefon raqam kutilmoqda",
             'waiting_code': "🔐 Auth kodi kutilmoqda",
             'waiting_password': "🔒 2FA paroli kutilmoqda",
             'active': "✅ Session faol",
-            'no_state': "❌ Session yo'q"
+            'not_started': "❌ Session yo'q"
         }
         
-        await message.reply(f"**Status:** {status_text.get(state, 'Noma\'lum')}")
-        return
-    
-    # Help command
-    elif text.startswith('/help'):
-        await message.reply(
-            "**📖 Yordam:**\n\n"
-            "1. `/start` - Botni ishga tushirish\n"
-            "2. Telefon raqamingizni yuboring\n"
-            "3. Telegram'dan kelgan 5 xonali kodni yuboring\n"
-            "4. Agar 2FA bo'lsa, parolni yuboring\n"
-            "5. `/menu` - Asosiy menyuni ochish\n"
-            "6. Kanalga o'ting va 'Obuna bolidim' tugmasini bosing\n\n"
-            "**⚠️ Diqqat:** Kod va parollaringizni hech kimga bermang!"
+        await query.edit_message_text(
+            f"📊 **Bot Holati:**\n\n"
+            f"👤 **Foydalanuvchi ID:** {user_id}\n"
+            f"📱 **Holat:** {status_text.get(status, 'Noma\'lum')}\n"
+            f"🤖 **Monitor bot:** @{BOT_USERNAME}\n"
+            f"🔗 **Avtomatik obuna:** {'✅ Yoqilgan' if status == 'active' else '❌ O\'chirilgan'}"
         )
-        return
+    
+    elif data == "stop_auto":
+        # Avtomatik obunani to'xtatish
+        user_states[user_id] = 'waiting_phone'
+        if client:
+            client.remove_event_handler(client._event_builders.get((events.NewMessage, (BOT_USERNAME,))))
+        
+        await query.edit_message_text(
+            "🛑 **Avtomatik obuna to'xtatildi!**\n\n"
+            "Qayta ishga tushirish uchun /start ni bosing."
+        )
 
-@bot_client.on_callback_query()
-async def handle_callbacks(client, callback_query):
-    user_id = callback_query.from_user.id
-    chat_id = callback_query.message.chat.id
-    data = callback_query.data
+async def help_command(update: Update, context: CallbackContext):
+    await update.message.reply_text(
+        "📖 **Yordam:**\n\n"
+        "1. `/start` - Botni ishga tushirish\n"
+        "2. Telefon raqamingizni yuboring\n"
+        "3. Telegram'dan kelgan 5 xonali kodni yuboring\n"
+        "4. Agar 2FA bo'lsa, parolni yuboring\n"
+        "5. `/menu` - Asosiy menyuni ochish\n"
+        "6. Bot avtomatik @Obunachi_X dan xabarlarni kuzatadi\n\n"
+        "⚠️ **Diqqat:** Kod va parollaringizni hech kimga bermang!"
+    )
+
+async def status_command(update: Update, context: CallbackContext):
+    user_id = update.effective_user.id
+    status = user_states.get(user_id, 'not_started')
+    status_text = {
+        'waiting_phone': "📞 Telefon raqam kutilmoqda",
+        'waiting_code': "🔐 Auth kodi kutilmoqda",
+        'waiting_password': "🔒 2FA paroli kutilmoqda",
+        'active': "✅ Session faol",
+        'not_started': "❌ Session yo'q"
+    }
     
-    # State ni tekshirish
-    if user_states.get(chat_id) != 'active':
-        await callback_query.answer("❌ Avval telefon raqam orqali kirishingiz kerak! /start bosib qayta urinib ko'ring.", show_alert=True)
-        return
-    
-    if data == "subscribe_confirm":
-        await callback_query.answer("⏳ Obuna bo'linmoqda...")
-        
-        # Join channel using user account
-        channel_link = "https://t.me/waka_stock_org"
-        
-        try:
-            # Attempt to join channel
-            success, channel_id = await join_channel(channel_link)
-            
-            if success:
-                # Update user balance
-                cursor.execute('''UPDATE users SET 
-                                balance = balance + 1,
-                                total_tasks = total_tasks + 1,
-                                completed_tasks = completed_tasks + 1 
-                                WHERE user_id = ?''', (user_id,))
-                conn.commit()
-                
-                # Get updated stats
-                cursor.execute('''SELECT balance, completed_tasks FROM users WHERE user_id = ?''', 
-                             (user_id,))
-                stats = cursor.fetchone()
-                new_balance = stats[0] if stats else 1
-                completed = stats[1] if stats else 1
-                
-                await callback_query.answer(
-                    f"✅ Obuna bo'ldingiz! +1 P\n"
-                    f"Yangi balans: {new_balance} P\n"
-                    f"Bajarilgan: {completed} ta",
-                    show_alert=True
-                )
-                
-                # Create next task
-                next_task_id = 574028
-                next_task_name = "Next_Channel"
-                next_task_total = 30
-                next_task_done = completed + 1
-                next_task_username = "@next_channel"
-                
-                keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("📢 Kanalga o'tish", url="https://t.me/next_channel")],
-                    [InlineKeyboardButton("😊 Obuna bolidim", callback_data="subscribe_next")]
-                ])
-                
-                await callback_query.message.edit_text(
-                    f"**X Obunachi [Bot]**\n"
-                    f"13 260 monthly users\n\n"
-                    f"══════════════════\n"
-                    f"**ID Raqami:** {next_task_id}\n"
-                    f"**Nomi:** {next_task_name}\n"
-                    f"**Buyurtma soni:** {next_task_total}\n"
-                    f"**Bajarildi:** {next_task_done}\n"
-                    f"**Usernamesi:** {next_task_username}\n\n"
-                    f"══════════════════\n"
-                    f"Kanalga obuna bo'ling va 😊 Obuna bolidim\n"
-                    f"tugmasini bosing.\n"
-                    f"Kanalga obuna bo'lganingiz uchun **1 P** beriladi\n\n"
-                    f"══════════════════\n"
-                    f"**Balans:** {new_balance} P\n"
-                    f"**Bajarilgan:** {completed}/{next_task_total}",
-                    reply_markup=keyboard
-                )
-                
-            else:
-                await callback_query.answer(
-                    "❌ Obuna bo'lishda xatolik. Qayta urinib ko'ring.",
-                    show_alert=True
-                )
-                
-        except Exception as e:
-            await callback_query.answer(
-                f"❌ Xatolik: {str(e)[:50]}",
-                show_alert=True
-            )
-    
-    elif data == "subscribe_next":
-        await callback_query.answer("⏳ Keyingi kanalga obuna bo'linmoqda...")
-        
-        channel_link = "https://t.me/next_channel"
-        success, _ = await join_channel(channel_link)
-        
-        if success:
-            cursor.execute('''UPDATE users SET 
-                            balance = balance + 1,
-                            completed_tasks = completed_tasks + 1 
-                            WHERE user_id = ?''', (user_id,))
-            conn.commit()
-            
-            await callback_query.answer(
-                "✅ Keyingi kanalga obuna bo'ldingiz! +1 P",
-                show_alert=True
-            )
+    await update.message.reply_text(f"📊 **Holat:** {status_text.get(status, 'Noma\'lum')}")
 
 async def main():
-    # Start bot client
-    print("🤖 Botni ishga tushiramiz...")
-    await bot_client.start()
+    # Fayllar uchun papka yaratish
+    if not os.path.exists("sessions"):
+        os.makedirs("sessions")
     
-    me = await bot_client.get_me()
-    print(f"✅ Bot ishga tushdi: @{me.username}")
-    print(f"📞 Botga kirish: https://t.me/{me.username}")
-    print("\n📋 Foydalanish tartibi:")
+    # Botni yaratish
+    application = Application.builder().token(BOT_TOKEN).build()
+    
+    # Handlers
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("menu", menu_command))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("status", status_command))
+    application.add_handler(CallbackQueryHandler(button_handler))
+    
+    # Message handlers
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, 
+                                         lambda update, context: asyncio.create_task(
+                                             handle_phone_number(update, context) 
+                                             if user_states.get(update.effective_user.id) == 'waiting_phone' 
+                                             else (handle_auth_code(update, context) 
+                                                   if user_states.get(update.effective_user.id) == 'waiting_code' 
+                                                   else handle_2fa_password(update, context))
+                                         )))
+    
+    print(f"🤖 Bot ishga tushmoqda...")
+    print(f"📞 Bot token: {BOT_TOKEN[:10]}...")
+    print(f"🔗 Bot username: {BOT_USERNAME}")
+    print(f"📁 Sessions papkasi: sessions/")
+    
+    # Botni ishga tushirish
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling()
+    
+    print("✅ Bot muvaffaqiyatli ishga tushdi!")
+    print("📋 Foydalanish tartibi:")
     print("1. Botga /start bosing")
     print("2. Telefon raqamingizni yuboring")
     print("3. Telegram'dan kelgan kodni yuboring")
     print("4. Agar 2FA bo'lsa, parolni yuboring")
     print("5. /menu bosing va ishni boshlang")
     
-    # Keep running
-    try:
-        await asyncio.Event().wait()
-    except KeyboardInterrupt:
-        print("\n🛑 Bot to'xtatildi.")
+    # Dasturni to'xtatmaslik uchun
+    await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    # Create required directories
-    if not os.path.exists("sessions"):
-        os.makedirs("sessions")
-    
-    # Run the bot
     try:
         asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n🛑 Bot to'xtatildi.")
     except Exception as e:
         print(f"❌ Xatolik: {e}")
