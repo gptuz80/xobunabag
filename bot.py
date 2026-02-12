@@ -20,7 +20,7 @@ API_HASH = "c6fa656e333fd6c9d5b9867daf028ea1"
 PHONE_NUMBER = None  # Telefon raqam /start dan keyin so'raladi
 
 # Kanallar
-TARGET_CHANNEL = "Obunachi_X"  # Buyurtmalar keladigan kanal
+TARGET_CHANNEL = "@Obunachi_X"  # Buyurtmalar keladigan kanal
 
 # Database
 conn = sqlite3.connect('obunachi.db', check_same_thread=False)
@@ -320,134 +320,87 @@ async def auto_work_loop(chat_id, update):
             await asyncio.sleep(30)
 
 async def check_and_do_tasks(chat_id, update):
-    """Kanalda yangi topshiriqlarni tekshirish va bajarish"""
-    global user_client, current_task, is_working
-    
+    global user_client, is_working
+
     if not is_working or not user_client:
         return
-    
+
     try:
-        # Kanaldan so'nggi xabarlarni olish
-        messages = await user_client.get_messages(TARGET_CHANNEL, limit=10)
-        
+        messages = await user_client.get_messages("@Obunachi_X", limit=5)
+
         for message in messages:
-            if not message.text and not message.buttons:
+
+            if not message.buttons:
                 continue
-            
-            message_text = message.text or ""
-            message_id = message.id
-            
-            # BUYURTMA NI TEKSHIRISH
-            if "ID Raqami:" in message_text and "Nomi:" in message_text and "JOIN CHANNEL" in message_text:
-                
-                # Topshiriq ID sini olish
-                task_id = None
-                channel_name = None
-                channel_link = None
-                
-                lines = message_text.split('\n')
-                for line in lines:
-                    if "ID Raqami:" in line:
-                        task_id = line.replace("ID Raqami:", "").strip()
-                    elif "Nomi:" in line:
-                        channel_name = line.replace("Nomi:", "").strip()
-                    elif "Usernamesi:" in line:
-                        username = line.replace("Usernamesi:", "").strip()
-                        channel_link = f"https://t.me/{username.replace('@', '')}"
-                
-                # Bu topshiriq allaqachon bajarilganmi?
-                cursor.execute('''SELECT completed FROM tasks WHERE task_id = ?''', (task_id,))
-                existing = cursor.fetchone()
-                
-                if existing and existing[0]:
-                    continue  # Bajarilgan
-                
-                current_task = {
-                    'id': task_id,
-                    'name': channel_name,
-                    'link': channel_link,
-                    'message': message
-                }
-                
-                print(f"\n🔔 YANGI BUYURTMA TOPILDI!")
-                print(f"   ID: {task_id}")
-                print(f"   Kanal: {channel_name}")
-                print(f"   Link: {channel_link}")
-                
-                # TOPSHIRIQNI BAJARISH
-                await update.effective_user.send_message(
-                    f"🔔 **Yangi buyurtma!**\n"
-                    f"📌 ID: `{task_id}`\n"
-                    f"📢 Kanal: {channel_name}\n"
-                    f"🔗 Link: {channel_link}\n\n"
-                    f"🔄 Obuna bo'linmoqda..."
-                )
-                
-                # 1. KANALGA OBUNA BO'LISH
-                success = False
-                try:
-                    if channel_link:
-                        if "+" in channel_link or "joinchat" in channel_link:
-                            invite_hash = channel_link.split("+")[-1]
-                            await user_client(ImportChatInviteRequest(invite_hash))
-                        else:
-                            channel_username = channel_link.split("/")[-1]
-                            await user_client(JoinChannelRequest(channel_username))
-                        
-                        print(f"   ✅ Obuna bo'lindi: {channel_name}")
-                        success = True
-                        
-                except FloodWaitError as e:
-                    raise e
-                except Exception as e:
-                    print(f"   ❌ Obuna bo'lishda xatolik: {e}")
-                
-                if success:
-                    await asyncio.sleep(random.randint(2, 5))
-                    
-                    # 2. TASDIQLASH TUGMASINI BOSISH
-                    try:
-                        # Xabardagi tugmalarni topish
-                        if message.buttons:
-                            for row in message.buttons:
-                                for button in row:
-                                    button_text = getattr(button, 'text', '').lower()
-                                    
-                                    if "tasdiqlash" in button_text or "confirm" in button_text or "✅" in button_text:
-                                        await button.click()
-                                        print(f"   ✅ Tasdiqlash tugmasi bosildi")
-                                        
-                                        # Statistika yangilash
-                                        cursor.execute('''INSERT OR IGNORE INTO stats (user_id) VALUES (?)''', (chat_id,))
-                                        cursor.execute('''UPDATE stats SET 
-                                                        balance = balance + 1,
-                                                        total_tasks = total_tasks + 1,
-                                                        completed_tasks = completed_tasks + 1,
-                                                        last_task_time = CURRENT_TIMESTAMP
-                                                        WHERE user_id = ?''', (chat_id,))
-                                        
-                                        cursor.execute('''INSERT INTO tasks (task_id, channel_name, channel_link, completed) 
-                                                        VALUES (?, ?, ?, 1)''', (task_id, channel_name, channel_link))
-                                        conn.commit()
-                                        
-                                        await update.effective_user.send_message(
-                                            f"✅ **Buyurtma bajarildi!**\n"
-                                            f"📌 ID: {task_id}\n"
-                                            f"💰 +1 P balans!"
-                                        )
-                                        
-                                        break
-                                
-                    except Exception as e:
-                        print(f"   ❌ Tasdiqlash xatolik: {e}")
-                
-                # Flood limitni oldini olish
+
+            join_clicked = False
+            confirm_clicked = False
+
+            for row in message.buttons:
+                for button in row:
+                    text = button.text.lower()
+
+                    # 🔥 JOIN BUTTON
+                    if "join" in text or "kanal" in text:
+                        try:
+                            await button.click()
+
+                            print("✅ JOIN bosildi")
+
+                            # Telegram join qilishga ulgurishi uchun
+                            await asyncio.sleep(random.randint(4, 8))
+
+                            join_clicked = True
+
+                        except FloodWaitError as e:
+                            raise e
+                        except Exception as e:
+                            print("JOIN ERROR:", e)
+
+                    # 🔥 CONFIRM BUTTON
+                    if "tasdiqlash" in text or "confirm" in text:
+                        try:
+                            await asyncio.sleep(random.randint(2, 5))
+
+                            await button.click()
+
+                            print("✅ CONFIRM bosildi")
+
+                            confirm_clicked = True
+
+                            # Stat update
+                            cursor.execute(
+                                '''INSERT OR IGNORE INTO stats (user_id) VALUES (?)''',
+                                (chat_id,)
+                            )
+
+                            cursor.execute(
+                                '''UPDATE stats SET 
+                                   balance = balance + 1,
+                                   total_tasks = total_tasks + 1,
+                                   completed_tasks = completed_tasks + 1,
+                                   last_task_time = CURRENT_TIMESTAMP
+                                   WHERE user_id = ?''',
+                                (chat_id,)
+                            )
+
+                            conn.commit()
+
+                            await update.effective_user.send_message(
+                                "✅ Buyurtma bajarildi! +1 balans"
+                            )
+
+                        except Exception as e:
+                            print("CONFIRM ERROR:", e)
+
+            # Flood yemaylik
+            if join_clicked:
                 await asyncio.sleep(random.randint(10, 20))
-                
+
     except FloodWaitError as e:
         raise e
     except Exception as e:
-        print(f"❌ Tekshirish xatolik: {e}")
+        print("TASK ERROR:", e)
 
 # ============================================
 # TELEGRAM BOTNI ISHGA TUSHIRISH
