@@ -171,11 +171,17 @@ async def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.Regex(r'^\+\d+'), phone_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, code_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, password_handler))
 
     print("🤖 BOT ISHLADI")
 
-    await app.run_polling()
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
+
+    await asyncio.Event().wait()
 
 
-asyncio.run(main())
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())
+

@@ -3,4 +3,6 @@ python-telegram-bot==21.6
 telethon
 python-telegram-bot==21.6
 cryptg
+python-3.11.9
+
 
