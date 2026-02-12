@@ -355,7 +355,7 @@ async def check_and_do_tasks(chat_id, update):
         return
 
     try:
-        messages = await user_client.get_messages("@Obunachi_X", limit=5)
+        messages = await user_client.get_messages("@Obunachi_X", limit=1)
 
         for message in messages:
 
