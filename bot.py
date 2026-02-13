@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from telethon import TelegramClient, events
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.functions.messages import ImportChatInviteRequest
-from telethon.errors import FloodWaitError, SessionPasswordNeededError
+from telethon.errors import FloodWaitError, SessionPasswordNeededError, UserNotParticipantError
 from telegram import Bot, Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext
 import sqlite3
@@ -345,10 +345,41 @@ async def real_join(url):
         print("REAL JOIN ERROR:", e)
         return False
 
+async def check_membership(channel):
+    try:
+        entity = await user_client.get_entity(channel)
+        await user_client.get_participant(entity, 'me')
+        return True
+    except UserNotParticipantError:
+        return False
+    except Exception as e:
+        print("CHECK ERROR:", e)
+        return False
+
+from telethon.errors import UserNotParticipantError
+
+async def check_membership_by_url(url):
+    try:
+        if "t.me/+" in url or "joinchat" in url:
+            # Private linklarda tekshirish qiyin, join muvaffaqiyatli bo‘lsa True deb olamiz
+            return True
+
+        username = url.split("/")[-1]
+        entity = await user_client.get_entity(username)
+        await user_client.get_participant(entity, 'me')
+        return True
+
+    except UserNotParticipantError:
+        return False
+    except Exception as e:
+        print("CHECK ERROR:", e)
+        return False
+
+
            
 
 async def check_and_do_tasks(chat_id, update):
-    global user_client, is_working
+    global user_client, is_working, last_processed_message_id
 
     if not is_working or not user_client:
         return
@@ -356,66 +387,94 @@ async def check_and_do_tasks(chat_id, update):
     try:
         messages = await user_client.get_messages("@Obunachi_X", limit=1)
 
-        for message in messages:
+        if not messages:
+            return
 
-            if not message.buttons:
-                continue
+        message = messages[0]
 
-            join_clicked = False
+        # ❗ Eski xabarni qayta ishlamaslik
+        if last_processed_message_id == message.id:
+            return
 
-            for row in message.buttons:
-                for button in row:
+        last_processed_message_id = message.id
 
-                    text = button.text.lower()
+        if not message.buttons:
+            return
 
-                    # ✅ REAL JOIN
-                    if ("join" in text or "kanal" in text) and button.url:
+        joined_channels = []
 
-                        success = await real_join(button.url)
+        # ===============================
+        # 1️⃣ AVVAL BARCHA JOINLARNI BAJARAMIZ
+        # ===============================
+        for row in message.buttons:
+            for button in row:
 
-                        if success:
-                            join_clicked = True
+                text = button.text.lower()
 
-                            print("✅ JOIN BAJARILDI")
+                if ("join" in text or "kanal" in text) and button.url:
 
-                    # ✅ CONFIRM (FAqat join bo‘lsa)
-                    if join_clicked and ("tasdiqlash" in text or "confirm" in text):
-                        try:
+                    print("🔄 JOIN URINISH:", button.url)
 
-                            await asyncio.sleep(random.randint(2,5))
+                    success = await real_join(button.url)
 
-                            await button.click()
+                    if success:
+                        is_member = await check_membership_by_url(button.url)
 
-                            print("✅ CONFIRM BOSILDI")
+                        if is_member:
+                            joined_channels.append(button.url)
+                            print("✅ HAQIQIY OBUNA TASDIQLANDI")
+                        else:
+                            print("❌ Obuna tasdiqlanmadi")
 
-                            # STAT UPDATE
-                            cursor.execute(
-                                '''INSERT OR IGNORE INTO stats (user_id) VALUES (?)''',
-                                (chat_id,)
-                            )
+        # Agar hech bo‘lmasa 1 ta kanalga real kirilgan bo‘lsa
+        if not joined_channels:
+            return
 
-                            cursor.execute(
-                                '''UPDATE stats SET 
-                                   balance = balance + 1,
-                                   total_tasks = total_tasks + 1,
-                                   completed_tasks = completed_tasks + 1,
-                                   last_task_time = CURRENT_TIMESTAMP
-                                   WHERE user_id = ?''',
-                                (chat_id,)
-                            )
+        # ===============================
+        # 2️⃣ CONFIRM BOSISH
+        # ===============================
+        for row in message.buttons:
+            for button in row:
 
-                            conn.commit()
+                text = button.text.lower()
 
-                            await update.effective_user.send_message(
-                                "✅ Buyurtma bajarildi! +1 balans"
-                            )
+                if "tasdiqlash" in text or "confirm" in text:
 
-                        except Exception as e:
-                            print("❌ CONFIRM ERROR:", e)
+                    try:
+                        await asyncio.sleep(2)
 
-            # Flood protection
-            if join_clicked:
-                await asyncio.sleep(2)
+                        await button.click()
+
+                        print("✅ CONFIRM BOSILDI")
+
+                        # ===============================
+                        # 3️⃣ STAT UPDATE
+                        # ===============================
+                        cursor.execute(
+                            '''INSERT OR IGNORE INTO stats (user_id) VALUES (?)''',
+                            (chat_id,)
+                        )
+
+                        cursor.execute(
+                            '''UPDATE stats SET 
+                               balance = balance + 1,
+                               total_tasks = total_tasks + 1,
+                               completed_tasks = completed_tasks + 1,
+                               last_task_time = CURRENT_TIMESTAMP
+                               WHERE user_id = ?''',
+                            (chat_id,)
+                        )
+
+                        conn.commit()
+
+                        await update.effective_user.send_message(
+                            "✅ Buyurtma bajarildi! +1 balans"
+                        )
+
+                    except Exception as e:
+                        print("❌ CONFIRM ERROR:", e)
+
+        await asyncio.sleep(2)
 
     except FloodWaitError as e:
         raise e
