@@ -14,7 +14,7 @@ import os
 # ============================================
 # KONFIGURATSIYA
 # ============================================
-BOT_TOKEN = "8297551735:AAFfeIfGDKO4F7lGiS-Ih-oS4ZgYSuWEU1Q"
+BOT_TOKEN = "8226329148:AAH6HwVuE9KAyMAkURH0KMVK3gpxChdHHw0"
 API_ID = 20464354
 API_HASH = "c6fa656e333fd6c9d5b9867daf028ea1"
 PHONE_NUMBER = None
