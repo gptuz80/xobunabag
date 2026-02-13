@@ -50,7 +50,7 @@ is_working = False
 flood_wait_until = None
 processed_messages = set()  # Qayta ishlangan xabarlar ID si
 last_task_time = None  # Oxirgi bajarilgan topshiriq vaqti
-TASK_INTERVAL = 30  # Har 60 soniyada 1 ta topshiriq
+TASK_INTERVAL = 60  # Har 60 soniyada 1 ta topshiriq
 
 # ============================================
 # TELEGRAM BOT HANDLERLARI
@@ -283,60 +283,25 @@ async def stats_command(update: Update, context: CallbackContext):
 # ASOSIY AVTOMATLASHTIRILGAN ISH JARAYONI
 # ============================================
 async def auto_work_loop(chat_id, update):
-    """Asosiy avtomatik ish tsikli"""
-    global is_working, flood_wait_until, last_task_time
+    global is_working
     
     while is_working:
         try:
-            # Flood limitni tekshirish
-            if flood_wait_until and datetime.now() < flood_wait_until:
-                wait_time = (flood_wait_until - datetime.now()).total_seconds()
-                await asyncio.sleep(10)
-                continue
-            
-            # Vaqt oralig'ini tekshirish
-            current_time = datetime.now()
-            if last_task_time:
-                time_diff = (current_time - last_task_time).total_seconds()
-                if time_diff < TASK_INTERVAL:
-                    # Hali vaqt to'lmagan bo'lsa, kutish
-                    wait_seconds = TASK_INTERVAL - time_diff
-                    if wait_seconds > 0:
-                        print(f"⏳ {wait_seconds:.0f} soniya kutish...")
-                        await asyncio.sleep(min(wait_seconds, 5))
-                        continue
-            
-            # Kanalda yangi xabarlarni tekshirish
             task_done = await check_and_do_tasks(chat_id, update)
             
             if task_done:
-                # Agar topshiriq bajarilgan bo'lsa, vaqtni yangilash
-                last_task_time = datetime.now()
-                print(f"✅ Topshiriq bajarildi! Keyingi topshiriq {TASK_INTERVAL} soniyadan keyin")
+                print("✅ Topshiriq bajarildi!")
             
-            # Har safar tekshirgandan keyin biroz kutish
-            await asyncio.sleep(random.randint(2, 4))
+            print(f"⏳ {TASK_INTERVAL} soniya kutish...")
+            await asyncio.sleep(TASK_INTERVAL)
             
         except FloodWaitError as e:
-            wait_seconds = e.seconds
-            flood_wait_until = datetime.now() + timedelta(seconds=wait_seconds)
-            
-            hours = wait_seconds // 3600
-            minutes = (wait_seconds % 3600) // 60
-            
-            await update.effective_user.send_message(
-                f"⚠️ Telegram limiti!\n"
-                f"⏳ {hours} soat {minutes} daqiqa kutish kerak.\n"
-                f"🔄 Avtomatik davom etadi..."
-            )
-            
-            await asyncio.sleep(wait_seconds)
-            flood_wait_until = None
-            last_task_time = datetime.now()  # Limitdan keyin vaqtni reset qilish
+            await asyncio.sleep(e.seconds)
             
         except Exception as e:
             print(f"❌ Xatolik: {e}")
             await asyncio.sleep(5)
+
 
 async def join_channel(channel_url):
     """Kanalga obuna bo'lish"""
