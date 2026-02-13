@@ -273,87 +273,47 @@ async def stats_command(update: Update, context: CallbackContext):
 # ASOSIY AVTOMATLASHTIRILGAN ISH JARAYONI
 # ============================================
 async def auto_work_loop(chat_id, update):
-    """Asosiy avtomatik ish tsikli"""
-    global is_working, flood_wait_until, current_task
-    
+    """Asosiy avtomatik ish tsikli (limit kutmaydi)"""
+    global is_working
+
     while is_working:
         try:
-            # Flood limitni tekshirish
-            if flood_wait_until and datetime.now() < flood_wait_until:
-                wait_time = (flood_wait_until - datetime.now()).total_seconds()
-                print(f"⏳ Flood limit: {wait_time:.0f} soniya kutish...")
-                
-                # Har 10 daqiqada xabar yuborish
-                if int(wait_time) % 600 == 0:
-                    await update.effective_user.send_message(
-                        f"⏳ **Flood limit:** {wait_time/60:.0f} daqiqa kutish kerak..."
-                    )
-                
-                await asyncio.sleep(10)
-                continue
-            
             # Kanalda yangi xabarlarni tekshirish
             await check_and_do_tasks(chat_id, update)
-            
-            # Har safar tekshirgandan keyin biroz kutish
-            await asyncio.sleep(random.randint(5, 15))
-            
-        except FloodWaitError as e:
-            # Telegram flood limiti
-            wait_seconds = e.seconds
-            flood_wait_until = datetime.now() + timedelta(seconds=wait_seconds)
-            
-            hours = wait_seconds // 3600
-            minutes = (wait_seconds % 3600) // 60
-            
-            await update.effective_user.send_message(
-                f"⚠️ **Telegram limiti!**\n"
-                f"⏳ {hours} soat {minutes} daqiqa kutish kerak.\n"
-                f"🔄 Avtomatik davom etadi..."
-            )
-            
-            await asyncio.sleep(wait_seconds)
-            flood_wait_until = None
-            
+
+            # Tekshiruv oralig‘i
+            await asyncio.sleep(random.randint(5, 10))
+
+        except FloodWaitError:
+            # Limit chiqsa kutmaydi, skip qiladi
+            print("⚠️ Flood limit chiqdi — skip qilindi")
+            await asyncio.sleep(5)
+
         except Exception as e:
             print(f"❌ Xatolik: {e}")
-            await asyncio.sleep(30)
+            await asyncio.sleep(5)
+
 
 async def real_join(url):
-    global user_client
-
     try:
-        # PRIVATE kanal
         if "t.me/+" in url or "joinchat" in url:
             invite_hash = url.split("/")[-1].replace("+", "")
             await user_client(ImportChatInviteRequest(invite_hash))
-
-        # PUBLIC kanal
         else:
             username = url.split("/")[-1]
-            await user_client(JoinChannelRequest(username))
+            entity = await user_client.get_entity(username)
+            await user_client(JoinChannelRequest(entity))
 
         print("✅ REAL OBUNA BO‘LDI")
+        await asyncio.sleep(random.randint(2,4))
         return True
 
-    except FloodWaitError as e:
-        print(f"⚠️ Flood limit: {e.seconds} sekund")
-        await asyncio.sleep(e.seconds)
+    except FloodWaitError:
+        print("⚠️ Flood limit chiqdi — skip qilindi")
         return False
 
     except Exception as e:
         print("REAL JOIN ERROR:", e)
-        return False
-
-async def check_membership(channel):
-    try:
-        entity = await user_client.get_entity(channel)
-        await user_client.get_participant(entity, 'me')
-        return True
-    except UserNotParticipantError:
-        return False
-    except Exception as e:
-        print("CHECK ERROR:", e)
         return False
 
 from telethon.errors import UserNotParticipantError
@@ -477,7 +437,7 @@ async def check_and_do_tasks(chat_id, update):
         await asyncio.sleep(2)
 
     except FloodWaitError as e:
-        raise e
+        print("⚠️ Flood taskda — skip")
 
     except Exception as e:
         print("❌ TASK ERROR:", e)
