@@ -49,6 +49,8 @@ pending_sessions = {}  # {chat_id: {'phone': phone, 'client': client}}
 is_working = False
 flood_wait_until = None
 processed_messages = set()  # Qayta ishlangan xabarlar ID si
+last_task_time = None  # Oxirgi bajarilgan topshiriq vaqti
+TASK_INTERVAL = 60  # Har 60 soniyada 1 ta topshiriq
 
 # ============================================
 # TELEGRAM BOT HANDLERLARI
@@ -63,6 +65,24 @@ async def start_command(update: Update, context: CallbackContext):
         "📱 Namuna: +998901234567\n\n"
         "⚠️ Bu raqam @Obunachi_X kanalidan buyurtmalarni bajarish uchun ishlatiladi."
     )
+
+async def set_interval_command(update: Update, context: CallbackContext):
+    global TASK_INTERVAL
+    
+    try:
+        args = context.args
+        if args and args[0].isdigit():
+            new_interval = int(args[0])
+            if 30 <= new_interval <= 300:  # 30 soniyadan 5 minutgacha
+                TASK_INTERVAL = new_interval
+                await update.message.reply_text(f"✅ Vaqt oralig'i {new_interval} soniyaga o'zgartirildi!")
+            else:
+                await update.message.reply_text("❌ Vaqt oralig'i 30-300 soniya orasida bo'lishi kerak!")
+        else:
+            await update.message.reply_text(f"⏱ Hozirgi vaqt oralig'i: {TASK_INTERVAL} soniya\n"
+                                          f"/set_interval [soniya] - yangi vaqt oralig'ini belgilash")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Xatolik: {e}")
 
 async def handle_phone(update: Update, context: CallbackContext):
     global PHONE_NUMBER, user_client
@@ -199,7 +219,7 @@ async def handle_password(update: Update, context: CallbackContext):
         await update.message.reply_text(f"❌ Noto'g'ri parol: {str(e)}")
 
 async def start_work_command(update: Update, context: CallbackContext):
-    global is_working, work_start_time, processed_messages
+    global is_working, processed_messages, last_task_time
     
     chat_id = update.effective_user.id
     if user_states.get(chat_id) != 'active':
@@ -212,13 +232,15 @@ async def start_work_command(update: Update, context: CallbackContext):
     
     is_working = True
     processed_messages = set()  # Tozalash
+    last_task_time = datetime.now()
     
     await update.message.reply_text(
-        "🚀 Ish boshlandi!\n\n"
-        "🔍 @Obunachi_X kanali kuzatilmoqda...\n"
-        "✅ Yangi buyurtma kelganda avtomatik bajariladi.\n\n"
-        "📊 /stats - Statistika\n"
-        "🛑 /stop - To'xtatish"
+        f"🚀 Ish boshlandi!\n\n"
+        f"🔍 @Obunachi_X kanali kuzatilmoqda...\n"
+        f"✅ Har {TASK_INTERVAL} soniyada 1 ta topshiriq bajariladi.\n\n"
+        f"📊 /stats - Statistika\n"
+        f"⏱ /set_interval - Vaqt oralig'ini o'zgartirish\n"
+        f"🛑 /stop - To'xtatish"
     )
     
     # Ishni boshlash
@@ -253,7 +275,8 @@ async def stats_command(update: Update, context: CallbackContext):
         f"💰 Balans: {balance} P\n"
         f"📝 Jami topshiriq: {total}\n"
         f"✅ Bajarilgan: {completed}\n"
-        f"⏳ Bajarilmagan: {total - completed}"
+        f"⏳ Bajarilmagan: {total - completed}\n"
+        f"⏱ Vaqt oralig'i: {TASK_INTERVAL} soniya"
     )
 
 # ============================================
@@ -261,7 +284,7 @@ async def stats_command(update: Update, context: CallbackContext):
 # ============================================
 async def auto_work_loop(chat_id, update):
     """Asosiy avtomatik ish tsikli"""
-    global is_working, flood_wait_until
+    global is_working, flood_wait_until, last_task_time
     
     while is_working:
         try:
@@ -271,11 +294,28 @@ async def auto_work_loop(chat_id, update):
                 await asyncio.sleep(10)
                 continue
             
+            # Vaqt oralig'ini tekshirish
+            current_time = datetime.now()
+            if last_task_time:
+                time_diff = (current_time - last_task_time).total_seconds()
+                if time_diff < TASK_INTERVAL:
+                    # Hali vaqt to'lmagan bo'lsa, kutish
+                    wait_seconds = TASK_INTERVAL - time_diff
+                    if wait_seconds > 0:
+                        print(f"⏳ {wait_seconds:.0f} soniya kutish...")
+                        await asyncio.sleep(min(wait_seconds, 5))
+                        continue
+            
             # Kanalda yangi xabarlarni tekshirish
-            await check_and_do_tasks(chat_id, update)
+            task_done = await check_and_do_tasks(chat_id, update)
+            
+            if task_done:
+                # Agar topshiriq bajarilgan bo'lsa, vaqtni yangilash
+                last_task_time = datetime.now()
+                print(f"✅ Topshiriq bajarildi! Keyingi topshiriq {TASK_INTERVAL} soniyadan keyin")
             
             # Har safar tekshirgandan keyin biroz kutish
-            await asyncio.sleep(random.randint(3, 7))
+            await asyncio.sleep(random.randint(2, 4))
             
         except FloodWaitError as e:
             wait_seconds = e.seconds
@@ -292,6 +332,7 @@ async def auto_work_loop(chat_id, update):
             
             await asyncio.sleep(wait_seconds)
             flood_wait_until = None
+            last_task_time = datetime.now()  # Limitdan keyin vaqtni reset qilish
             
         except Exception as e:
             print(f"❌ Xatolik: {e}")
@@ -309,9 +350,10 @@ async def join_channel(channel_url):
             username = channel_url.split("/")[-1]
             await user_client(JoinChannelRequest(username))
         
+        print(f"✅ Kanalga obuna bo'lindi: {channel_url}")
         return True
     except Exception as e:
-        print(f"Obuna xatoligi: {e}")
+        print(f"❌ Obuna xatoligi: {e}")
         return False
 
 async def check_and_do_tasks(chat_id, update):
@@ -319,7 +361,7 @@ async def check_and_do_tasks(chat_id, update):
     global user_client, is_working, processed_messages
 
     if not is_working or not user_client:
-        return
+        return False
 
     try:
         # Oxirgi 5 xabarni olish
@@ -347,7 +389,7 @@ async def check_and_do_tasks(chat_id, update):
                     button_text = button.text.lower()
                     
                     # Kanalga o'tish tugmasi (JOIN CHANNEL)
-                    if ("join" in button_text or "kanal" in button_text) and button.url:
+                    if ("join" in button_text or "kanal" in button_text) and hasattr(button, 'url') and button.url:
                         channel_link = button.url
                         print(f"🔗 Kanal topildi: {channel_link}")
                         
@@ -360,7 +402,7 @@ async def check_and_do_tasks(chat_id, update):
                             await asyncio.sleep(random.randint(2, 4))
                     
                     # Tasdiqlash tugmasi (faqat join bo'lgan bo'lsa)
-                    if join_clicked and ("tasdiqlash" in button_text or "confirm" in button_text):
+                    if join_clicked and ("tasdiqlash" in button_text or "confirm" in button_text or "✅" in button.text):
                         try:
                             # Callback tugmani bosish
                             await button.click()
@@ -377,7 +419,7 @@ async def check_and_do_tasks(chat_id, update):
                             
                             # Topshiriqni bazaga yozish
                             try:
-                                cursor.execute('''INSERT INTO tasks (task_id, channel_name, channel_link, completed) 
+                                cursor.execute('''INSERT OR IGNORE INTO tasks (task_id, channel_name, channel_link, completed) 
                                                 VALUES (?, ?, ?, 1)''', 
                                                 (str(message_id), "Unknown", channel_link or "unknown"))
                             except:
@@ -389,20 +431,25 @@ async def check_and_do_tasks(chat_id, update):
                                 f"✅ Buyurtma bajarildi! +1 balans"
                             )
                             
-                            # Flood limitni oldini olish
-                            await asyncio.sleep(random.randint(8, 15))
+                            # Xabarni ishlangan deb belgilash
+                            processed_messages.add(message_id)
+                            
+                            return True  # Topshiriq bajarildi
                             
                         except Exception as e:
                             print(f"❌ Tasdiqlash xatosi: {e}")
             
-            # Xabarni ishlangan deb belgilash
+            # Agar join qilingan bo'lsa lekin tasdiqlash topilmagan bo'lsa
             if join_clicked:
                 processed_messages.add(message_id)
+                return True
                 
     except FloodWaitError as e:
         raise e
     except Exception as e:
         print(f"❌ Task xatosi: {e}")
+    
+    return False  # Topshiriq bajarilmadi
 
 # ============================================
 # TELEGRAM BOTNI ISHGA TUSHIRISH
@@ -426,6 +473,7 @@ async def main():
     application.add_handler(CommandHandler("start_work", start_work_command))
     application.add_handler(CommandHandler("stop", stop_work_command))
     application.add_handler(CommandHandler("stats", stats_command))
+    application.add_handler(CommandHandler("set_interval", set_interval_command))
     
     # Text handler
     application.add_handler(MessageHandler(
@@ -439,13 +487,15 @@ async def main():
     
     print(f"\n✅ Bot ishga tushdi!")
     print(f"📢 Target kanal: {TARGET_CHANNEL}")
+    print(f"⏱ Standart vaqt oralig'i: {TASK_INTERVAL} soniya")
     print("\n📋 Foydalanish:")
     print("1. Botga /start bosing")
     print("2. Telefon raqamingizni yuboring")
     print("3. Telegram kodini yuboring")
     print("4. /start_work - ishni boshlash")
-    print("5. /stats - statistika")
-    print("6. /stop - to'xtatish")
+    print("5. /set_interval 120 - vaqtni o'zgartirish")
+    print("6. /stats - statistika")
+    print("7. /stop - to'xtatish")
     print("=" * 50)
     
     # Botni ishga tushirish
