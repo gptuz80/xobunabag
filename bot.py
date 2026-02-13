@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from telethon import TelegramClient, events
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.functions.messages import ImportChatInviteRequest
-from telethon.errors import FloodWaitError, SessionPasswordNeededError, UserNotParticipantError
+from telethon.errors import FloodWaitError, SessionPasswordNeededError
 from telegram import Bot, Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext
 import sqlite3
@@ -273,73 +273,83 @@ async def stats_command(update: Update, context: CallbackContext):
 # ASOSIY AVTOMATLASHTIRILGAN ISH JARAYONI
 # ============================================
 async def auto_work_loop(chat_id, update):
-    """Asosiy avtomatik ish tsikli (limit kutmaydi)"""
-    global is_working
-
+    """Asosiy avtomatik ish tsikli"""
+    global is_working, flood_wait_until, current_task
+    
     while is_working:
         try:
+            # Flood limitni tekshirish
+            if flood_wait_until and datetime.now() < flood_wait_until:
+                wait_time = (flood_wait_until - datetime.now()).total_seconds()
+                print(f"⏳ Flood limit: {wait_time:.0f} soniya kutish...")
+                
+                # Har 10 daqiqada xabar yuborish
+                if int(wait_time) % 600 == 0:
+                    await update.effective_user.send_message(
+                        f"⏳ **Flood limit:** {wait_time/60:.0f} daqiqa kutish kerak..."
+                    )
+                
+                await asyncio.sleep(10)
+                continue
+            
             # Kanalda yangi xabarlarni tekshirish
             await check_and_do_tasks(chat_id, update)
-
-            # Tekshiruv oralig‘i
-            await asyncio.sleep(random.randint(5, 10))
-
-        except FloodWaitError:
-            # Limit chiqsa kutmaydi, skip qiladi
-            print("⚠️ Flood limit chiqdi — skip qilindi")
-            await asyncio.sleep(5)
-
+            
+            # Har safar tekshirgandan keyin biroz kutish
+            await asyncio.sleep(random.randint(5, 15))
+            
+        except FloodWaitError as e:
+            # Telegram flood limiti
+            wait_seconds = e.seconds
+            flood_wait_until = datetime.now() + timedelta(seconds=wait_seconds)
+            
+            hours = wait_seconds // 3600
+            minutes = (wait_seconds % 3600) // 60
+            
+            await update.effective_user.send_message(
+                f"⚠️ **Telegram limiti!**\n"
+                f"⏳ {hours} soat {minutes} daqiqa kutish kerak.\n"
+                f"🔄 Avtomatik davom etadi..."
+            )
+            
+            await asyncio.sleep(wait_seconds)
+            flood_wait_until = None
+            
         except Exception as e:
             print(f"❌ Xatolik: {e}")
-            await asyncio.sleep(5)
-
+            await asyncio.sleep(30)
 
 async def real_join(url):
     try:
+        # PRIVATE kanal
         if "t.me/+" in url or "joinchat" in url:
             invite_hash = url.split("/")[-1].replace("+", "")
             await user_client(ImportChatInviteRequest(invite_hash))
+
+        # PUBLIC kanal
         else:
             username = url.split("/")[-1]
             entity = await user_client.get_entity(username)
             await user_client(JoinChannelRequest(entity))
 
         print("✅ REAL OBUNA BO‘LDI")
-        await asyncio.sleep(random.randint(2,4))
+
+        await asyncio.sleep(random.randint(3,6))
+
         return True
 
-    except FloodWaitError:
-        print("⚠️ Flood limit chiqdi — skip qilindi")
+    except FloodWaitError as e:
+        print("Flood:", e.seconds)
+        await asyncio.sleep(e.seconds)
         return False
 
     except Exception as e:
         print("REAL JOIN ERROR:", e)
         return False
-
-from telethon.errors import UserNotParticipantError
-
-async def check_membership_by_url(url):
-    try:
-        if "t.me/+" in url or "joinchat" in url:
-            # Private linklarda tekshirish qiyin, join muvaffaqiyatli bo‘lsa True deb olamiz
-            return True
-
-        username = url.split("/")[-1]
-        entity = await user_client.get_entity(username)
-        await user_client.get_participant(entity, 'me')
-        return True
-
-    except UserNotParticipantError:
-        return False
-    except Exception as e:
-        print("CHECK ERROR:", e)
-        return False
-
-
            
 
 async def check_and_do_tasks(chat_id, update):
-    global user_client, is_working, last_processed_message_id
+    global user_client, is_working
 
     if not is_working or not user_client:
         return
@@ -347,97 +357,69 @@ async def check_and_do_tasks(chat_id, update):
     try:
         messages = await user_client.get_messages("@Obunachi_X", limit=1)
 
-        if not messages:
-            return
+        for message in messages:
 
-        message = messages[0]
+            if not message.buttons:
+                continue
 
-        # ❗ Eski xabarni qayta ishlamaslik
-        if last_processed_message_id == message.id:
-            return
+            join_clicked = False
 
-        last_processed_message_id = message.id
+            for row in message.buttons:
+                for button in row:
 
-        if not message.buttons:
-            return
+                    text = button.text.lower()
 
-        joined_channels = []
+                    # ✅ REAL JOIN
+                    if ("join" in text or "kanal" in text) and button.url:
 
-        # ===============================
-        # 1️⃣ AVVAL BARCHA JOINLARNI BAJARAMIZ
-        # ===============================
-        for row in message.buttons:
-            for button in row:
+                        success = await real_join(button.url)
 
-                text = button.text.lower()
+                        if success:
+                            join_clicked = True
 
-                if ("join" in text or "kanal" in text) and button.url:
+                            print("✅ JOIN BAJARILDI")
 
-                    print("🔄 JOIN URINISH:", button.url)
+                    # ✅ CONFIRM (FAqat join bo‘lsa)
+                    if join_clicked and ("tasdiqlash" in text or "confirm" in text):
+                        try:
 
-                    success = await real_join(button.url)
+                            await asyncio.sleep(random.randint(2,5))
 
-                    if success:
-                        is_member = await check_membership_by_url(button.url)
+                            await button.click()
 
-                        if is_member:
-                            joined_channels.append(button.url)
-                            print("✅ HAQIQIY OBUNA TASDIQLANDI")
-                        else:
-                            print("❌ Obuna tasdiqlanmadi")
+                            print("✅ CONFIRM BOSILDI")
 
-        # Agar hech bo‘lmasa 1 ta kanalga real kirilgan bo‘lsa
-        if not joined_channels:
-            return
+                            # STAT UPDATE
+                            cursor.execute(
+                                '''INSERT OR IGNORE INTO stats (user_id) VALUES (?)''',
+                                (chat_id,)
+                            )
 
-        # ===============================
-        # 2️⃣ CONFIRM BOSISH
-        # ===============================
-        for row in message.buttons:
-            for button in row:
+                            cursor.execute(
+                                '''UPDATE stats SET 
+                                   balance = balance + 1,
+                                   total_tasks = total_tasks + 1,
+                                   completed_tasks = completed_tasks + 1,
+                                   last_task_time = CURRENT_TIMESTAMP
+                                   WHERE user_id = ?''',
+                                (chat_id,)
+                            )
 
-                text = button.text.lower()
+                            conn.commit()
 
-                if "tasdiqlash" in text or "confirm" in text:
+                            await update.effective_user.send_message(
+                                "✅ Buyurtma bajarildi! +1 balans"
+                            )
 
-                    try:
-                        await asyncio.sleep(2)
+                        except Exception as e:
+                            print("❌ CONFIRM ERROR:", e)
 
-                        await button.click()
-
-                        print("✅ CONFIRM BOSILDI")
-
-                        # ===============================
-                        # 3️⃣ STAT UPDATE
-                        # ===============================
-                        cursor.execute(
-                            '''INSERT OR IGNORE INTO stats (user_id) VALUES (?)''',
-                            (chat_id,)
-                        )
-
-                        cursor.execute(
-                            '''UPDATE stats SET 
-                               balance = balance + 1,
-                               total_tasks = total_tasks + 1,
-                               completed_tasks = completed_tasks + 1,
-                               last_task_time = CURRENT_TIMESTAMP
-                               WHERE user_id = ?''',
-                            (chat_id,)
-                        )
-
-                        conn.commit()
-
-                        await update.effective_user.send_message(
-                            "✅ Buyurtma bajarildi! +1 balans"
-                        )
-
-                    except Exception as e:
-                        print("❌ CONFIRM ERROR:", e)
-
-        await asyncio.sleep(2)
+            # Flood protection
+            if join_clicked:
+                await asyncio.sleep(random.randint(10,20))
 
     except FloodWaitError as e:
-        print("⚠️ Flood taskda — skip")
+        raise e
 
     except Exception as e:
         print("❌ TASK ERROR:", e)
