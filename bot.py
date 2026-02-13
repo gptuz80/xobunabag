@@ -50,7 +50,7 @@ is_working = False
 flood_wait_until = None
 processed_messages = set()  # Qayta ishlangan xabarlar ID si
 last_task_time = None  # Oxirgi bajarilgan topshiriq vaqti
-TASK_INTERVAL = 30  # Har 60 soniyada 1 ta topshiriq
+TASK_INTERVAL = 60  # Har 60 soniyada 1 ta topshiriq
 
 # ============================================
 # TELEGRAM BOT HANDLERLARI
