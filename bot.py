@@ -6,7 +6,7 @@ from telethon import TelegramClient, events
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.functions.messages import ImportChatInviteRequest
 from telethon.errors import FloodWaitError, SessionPasswordNeededError
-from telegram import Bot, Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext
 import sqlite3
 import os
@@ -14,20 +14,20 @@ import os
 # ============================================
 # KONFIGURATSIYA
 # ============================================
-BOT_TOKEN = "8337176690:AAEIko_hVRHff206GTA38wiVeV0dyKha8Eo"
+BOT_TOKEN = "8573440155:AAG2oHadY9thbvfRIYpIBMPcwhL9iw_hVL4"
 API_ID = 20464354
 API_HASH = "c6fa656e333fd6c9d5b9867daf028ea1"
-PHONE_NUMBER = None  # Telefon raqam /start dan keyin so'raladi
+PHONE_NUMBER = None
 
 # Kanallar
-TARGET_CHANNEL = "@Obunachi_X"  # Buyurtmalar keladigan kanal
+TARGET_CHANNEL = "@Obunachi_X"
 
 # Database
 conn = sqlite3.connect('obunachi.db', check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute('''CREATE TABLE IF NOT EXISTS tasks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_id TEXT,
+    task_id TEXT UNIQUE,
     channel_name TEXT,
     channel_link TEXT,
     completed BOOLEAN DEFAULT 0,
@@ -44,13 +44,11 @@ conn.commit()
 
 # Global o'zgaruvchilar
 user_client = None
-bot_client = None
 user_states = {}  # {chat_id: state}
 pending_sessions = {}  # {chat_id: {'phone': phone, 'client': client}}
 is_working = False
-work_start_time = None
 flood_wait_until = None
-current_task = None
+processed_messages = set()  # Qayta ishlangan xabarlar ID si
 
 # ============================================
 # TELEGRAM BOT HANDLERLARI
@@ -60,9 +58,9 @@ async def start_command(update: Update, context: CallbackContext):
     user_states[chat_id] = 'waiting_phone'
     
     await update.message.reply_text(
-        "🤖 **Obunachi X Avtomatik Bot**\n\n"
+        "🤖 Obunachi X Avtomatik Bot\n\n"
         "Botni ishga tushirish uchun telefon raqamingizni yuboring:\n"
-        "📱 **Namuna:** `+998901234567`\n\n"
+        "📱 Namuna: +998901234567\n\n"
         "⚠️ Bu raqam @Obunachi_X kanalidan buyurtmalarni bajarish uchun ishlatiladi."
     )
 
@@ -78,17 +76,15 @@ async def handle_phone(update: Update, context: CallbackContext):
         phone = '+' + phone
     
     PHONE_NUMBER = phone
-    await update.message.reply_text(f"📱 Telefon raqam qabul qilindi: `{phone}`\n\n🔄 Telegram'ga ulanish...")
+    await update.message.reply_text(f"📱 Telefon raqam qabul qilindi: {phone}\n\n🔄 Telegram'ga ulanish...")
     
     try:
-        # Telethon client yaratish
         session_name = f"sessions/obunachi_{phone.replace('+', '')}"
         user_client = TelegramClient(session_name, API_ID, API_HASH)
         
         await user_client.connect()
         
         if not await user_client.is_user_authorized():
-            # Kod so'rash
             sent_code = await user_client.send_code_request(phone)
             pending_sessions[chat_id] = {
                 'phone': phone,
@@ -97,14 +93,13 @@ async def handle_phone(update: Update, context: CallbackContext):
             }
             user_states[chat_id] = 'waiting_code'
             await update.message.reply_text(
-                "📨 Telegram'dan kelgan **5 xonali kodni** yuboring:\n"
-                "⚠️ Masalan: `12345`"
+                "📨 Telegram'dan kelgan 5 xonali kodni yuboring:\n"
+                "Masalan: 12345"
             )
         else:
-            # Avtorizatsiya qilingan
             user_states[chat_id] = 'active'
             await update.message.reply_text(
-                "✅ **Muvaffaqiyatli ulanish!**\n"
+                "✅ Muvaffaqiyatli ulanish!\n"
                 "Sessiya mavjud, /start_work buyrug'ini bosing."
             )
             
@@ -140,11 +135,7 @@ async def handle_code(update: Update, context: CallbackContext):
         user_states[chat_id] = 'active'
         del pending_sessions[chat_id]
         
-        await update.message.reply_text(
-            "✅ **Muvaffaqiyatli kirildi!**\n\n"
-            "🔍 @Obunachi_X kanaliga ulanish...\n"
-            "Iltimos, biroz kuting..."
-        )
+        await update.message.reply_text("✅ Muvaffaqiyatli kirildi!")
         
         # Kanalga ulanish
         try:
@@ -154,15 +145,15 @@ async def handle_code(update: Update, context: CallbackContext):
             await update.message.reply_text(f"⚠️ Kanalga ulanishda xatolik: {str(e)}")
         
         await update.message.reply_text(
-            "🚀 **Ishni boshlash uchun** /start_work\n"
-            "📊 **Statistika uchun** /stats\n"
-            "🛑 **To'xtatish uchun** /stop"
+            "🚀 Ishni boshlash uchun /start_work\n"
+            "📊 Statistika uchun /stats\n"
+            "🛑 To'xtatish uchun /stop"
         )
         
     except SessionPasswordNeededError:
         user_states[chat_id] = 'waiting_password'
         await update.message.reply_text(
-            "🔐 **2FA paroli kerak.**\n"
+            "🔐 2FA paroli kerak.\n"
             "Telegram akkauntingizning 2 qadamli autentifikatsiya parolini yuboring:"
         )
     except Exception as e:
@@ -189,7 +180,7 @@ async def handle_password(update: Update, context: CallbackContext):
         user_states[chat_id] = 'active'
         del pending_sessions[chat_id]
         
-        await update.message.reply_text("✅ **2FA paroli qabul qilindi!**")
+        await update.message.reply_text("✅ 2FA paroli qabul qilindi!")
         
         # Kanalga ulanish
         try:
@@ -199,16 +190,16 @@ async def handle_password(update: Update, context: CallbackContext):
             pass
         
         await update.message.reply_text(
-            "🚀 **Ishni boshlash uchun** /start_work\n"
-            "📊 **Statistika uchun** /stats\n"
-            "🛑 **To'xtatish uchun** /stop"
+            "🚀 Ishni boshlash uchun /start_work\n"
+            "📊 Statistika uchun /stats\n"
+            "🛑 To'xtatish uchun /stop"
         )
         
     except Exception as e:
         await update.message.reply_text(f"❌ Noto'g'ri parol: {str(e)}")
 
 async def start_work_command(update: Update, context: CallbackContext):
-    global is_working, work_start_time
+    global is_working, work_start_time, processed_messages
     
     chat_id = update.effective_user.id
     if user_states.get(chat_id) != 'active':
@@ -220,13 +211,12 @@ async def start_work_command(update: Update, context: CallbackContext):
         return
     
     is_working = True
-    work_start_time = datetime.now()
+    processed_messages = set()  # Tozalash
     
     await update.message.reply_text(
-        "🚀 **Ish boshlandi!**\n\n"
+        "🚀 Ish boshlandi!\n\n"
         "🔍 @Obunachi_X kanali kuzatilmoqda...\n"
-        "✅ Yangi buyurtma kelganda avtomatik bajariladi.\n"
-        "⏱ Limit bo'lsa 1 soat kutadi.\n\n"
+        "✅ Yangi buyurtma kelganda avtomatik bajariladi.\n\n"
         "📊 /stats - Statistika\n"
         "🛑 /stop - To'xtatish"
     )
@@ -239,7 +229,7 @@ async def stop_work_command(update: Update, context: CallbackContext):
     is_working = False
     
     await update.message.reply_text(
-        "🛑 **Ish to'xtatildi!**\n"
+        "🛑 Ish to'xtatildi!\n"
         "Qayta boshlash uchun /start_work"
     )
 
@@ -257,16 +247,13 @@ async def stats_command(update: Update, context: CallbackContext):
     work_status = "✅ Ishlayapti" if is_working else "❌ To'xtatilgan"
     
     await update.message.reply_text(
-        f"📊 **STATISTIKA**\n\n"
-        f"👤 User ID: `{user_id}`\n"
+        f"📊 STATISTIKA\n\n"
+        f"👤 User ID: {user_id}\n"
         f"🤖 Holat: {work_status}\n"
-        f"💰 Balans: **{balance} P**\n"
-        f"📝 Jami topshiriq: **{total}**\n"
-        f"✅ Bajarilgan: **{completed}**\n"
-        f"⏳ Bajarilmagan: **{total - completed}**\n\n"
-        f"📈 **Umumiy stat:**\n"
-        f"• Soatlik limit: 50\n"
-        f"• Kutish vaqti: 1 soat"
+        f"💰 Balans: {balance} P\n"
+        f"📝 Jami topshiriq: {total}\n"
+        f"✅ Bajarilgan: {completed}\n"
+        f"⏳ Bajarilmagan: {total - completed}"
     )
 
 # ============================================
@@ -274,21 +261,13 @@ async def stats_command(update: Update, context: CallbackContext):
 # ============================================
 async def auto_work_loop(chat_id, update):
     """Asosiy avtomatik ish tsikli"""
-    global is_working, flood_wait_until, current_task
+    global is_working, flood_wait_until
     
     while is_working:
         try:
             # Flood limitni tekshirish
             if flood_wait_until and datetime.now() < flood_wait_until:
                 wait_time = (flood_wait_until - datetime.now()).total_seconds()
-                print(f"⏳ Flood limit: {wait_time:.0f} soniya kutish...")
-                
-                # Har 10 daqiqada xabar yuborish
-                if int(wait_time) % 600 == 0:
-                    await update.effective_user.send_message(
-                        f"⏳ **Flood limit:** {wait_time/60:.0f} daqiqa kutish kerak..."
-                    )
-                
                 await asyncio.sleep(10)
                 continue
             
@@ -296,10 +275,9 @@ async def auto_work_loop(chat_id, update):
             await check_and_do_tasks(chat_id, update)
             
             # Har safar tekshirgandan keyin biroz kutish
-            await asyncio.sleep(random.randint(5, 15))
+            await asyncio.sleep(random.randint(3, 7))
             
         except FloodWaitError as e:
-            # Telegram flood limiti
             wait_seconds = e.seconds
             flood_wait_until = datetime.now() + timedelta(seconds=wait_seconds)
             
@@ -307,7 +285,7 @@ async def auto_work_loop(chat_id, update):
             minutes = (wait_seconds % 3600) // 60
             
             await update.effective_user.send_message(
-                f"⚠️ **Telegram limiti!**\n"
+                f"⚠️ Telegram limiti!\n"
                 f"⏳ {hours} soat {minutes} daqiqa kutish kerak.\n"
                 f"🔄 Avtomatik davom etadi..."
             )
@@ -317,122 +295,120 @@ async def auto_work_loop(chat_id, update):
             
         except Exception as e:
             print(f"❌ Xatolik: {e}")
-            await asyncio.sleep(30)
+            await asyncio.sleep(5)
 
-async def real_join(url):
+async def join_channel(channel_url):
+    """Kanalga obuna bo'lish"""
     try:
-        # PRIVATE kanal
-        if "t.me/+" in url or "joinchat" in url:
-            invite_hash = url.split("/")[-1].replace("+", "")
+        if "t.me/+" in channel_url or "joinchat" in channel_url:
+            # Private kanal
+            invite_hash = channel_url.split("/")[-1].replace("+", "")
             await user_client(ImportChatInviteRequest(invite_hash))
-
-        # PUBLIC kanal
         else:
-            username = url.split("/")[-1]
-            entity = await user_client.get_entity(username)
-            await user_client(JoinChannelRequest(entity))
-
-        print("✅ REAL OBUNA BO‘LDI")
-
-        await asyncio.sleep(random.randint(3,6))
-
+            # Public kanal
+            username = channel_url.split("/")[-1]
+            await user_client(JoinChannelRequest(username))
+        
         return True
-
-    except FloodWaitError as e:
-        print("Flood:", e.seconds)
-        await asyncio.sleep(e.seconds)
-        return False
-
     except Exception as e:
-        print("REAL JOIN ERROR:", e)
+        print(f"Obuna xatoligi: {e}")
         return False
-           
 
 async def check_and_do_tasks(chat_id, update):
-    global user_client, is_working
+    """Kanalda yangi topshiriqlarni tekshirish va bajarish"""
+    global user_client, is_working, processed_messages
 
     if not is_working or not user_client:
         return
 
     try:
-        messages = await user_client.get_messages("@Obunachi_X", limit=1)
+        # Oxirgi 5 xabarni olish
+        messages = await user_client.get_messages(TARGET_CHANNEL, limit=5)
 
         for message in messages:
-
+            message_id = message.id
+            
+            # Agar bu xabar allaqachon ishlangan bo'lsa, o'tkazib yubor
+            if message_id in processed_messages:
+                continue
+            
+            # Xabarda tugma bormi?
             if not message.buttons:
                 continue
-
+            
+            print(f"\n📨 Yangi xabar topildi! ID: {message_id}")
+            
+            # Tugmalarni tekshirish
             join_clicked = False
-
+            channel_link = None
+            
             for row in message.buttons:
                 for button in row:
-
-                    text = button.text.lower()
-
-                    # ✅ REAL JOIN
-                    if ("join" in text or "kanal" in text) and button.url:
-
-                        success = await real_join(button.url)
-
+                    button_text = button.text.lower()
+                    
+                    # Kanalga o'tish tugmasi (JOIN CHANNEL)
+                    if ("join" in button_text or "kanal" in button_text) and button.url:
+                        channel_link = button.url
+                        print(f"🔗 Kanal topildi: {channel_link}")
+                        
+                        # Kanalga obuna bo'lish
+                        success = await join_channel(channel_link)
+                        
                         if success:
                             join_clicked = True
-
-                            print("✅ JOIN BAJARILDI")
-
-                    # ✅ CONFIRM (FAqat join bo‘lsa)
-                    if join_clicked and ("tasdiqlash" in text or "confirm" in text):
+                            print(f"✅ Obuna bo'lindi!")
+                            await asyncio.sleep(random.randint(2, 4))
+                    
+                    # Tasdiqlash tugmasi (faqat join bo'lgan bo'lsa)
+                    if join_clicked and ("tasdiqlash" in button_text or "confirm" in button_text):
                         try:
-
-                            await asyncio.sleep(random.randint(2,5))
-
+                            # Callback tugmani bosish
                             await button.click()
-
-                            print("✅ CONFIRM BOSILDI")
-
-                            # STAT UPDATE
-                            cursor.execute(
-                                '''INSERT OR IGNORE INTO stats (user_id) VALUES (?)''',
-                                (chat_id,)
-                            )
-
-                            cursor.execute(
-                                '''UPDATE stats SET 
-                                   balance = balance + 1,
-                                   total_tasks = total_tasks + 1,
-                                   completed_tasks = completed_tasks + 1,
-                                   last_task_time = CURRENT_TIMESTAMP
-                                   WHERE user_id = ?''',
-                                (chat_id,)
-                            )
-
+                            print(f"✅ Tasdiqlandi!")
+                            
+                            # Statistika yangilash
+                            cursor.execute('''INSERT OR IGNORE INTO stats (user_id) VALUES (?)''', (chat_id,))
+                            cursor.execute('''UPDATE stats SET 
+                                            balance = balance + 1,
+                                            total_tasks = total_tasks + 1,
+                                            completed_tasks = completed_tasks + 1,
+                                            last_task_time = CURRENT_TIMESTAMP
+                                            WHERE user_id = ?''', (chat_id,))
+                            
+                            # Topshiriqni bazaga yozish
+                            try:
+                                cursor.execute('''INSERT INTO tasks (task_id, channel_name, channel_link, completed) 
+                                                VALUES (?, ?, ?, 1)''', 
+                                                (str(message_id), "Unknown", channel_link or "unknown"))
+                            except:
+                                pass  # Duplicate bo'lsa ignore
+                            
                             conn.commit()
-
+                            
                             await update.effective_user.send_message(
-                                "✅ Buyurtma bajarildi! +1 balans"
+                                f"✅ Buyurtma bajarildi! +1 balans"
                             )
-
+                            
+                            # Flood limitni oldini olish
+                            await asyncio.sleep(random.randint(8, 15))
+                            
                         except Exception as e:
-                            print("❌ CONFIRM ERROR:", e)
-
-            # Flood protection
+                            print(f"❌ Tasdiqlash xatosi: {e}")
+            
+            # Xabarni ishlangan deb belgilash
             if join_clicked:
-                await asyncio.sleep(random.randint(10,20))
-
+                processed_messages.add(message_id)
+                
     except FloodWaitError as e:
         raise e
-
     except Exception as e:
-        print("❌ TASK ERROR:", e)
-
-
-        
+        print(f"❌ Task xatosi: {e}")
 
 # ============================================
 # TELEGRAM BOTNI ISHGA TUSHIRISH
 # ============================================
 async def main():
     """Asosiy funksiya"""
-    global bot_client
     
     print("=" * 50)
     print("🤖 Obunachi X Avtomatik Bot")
@@ -462,8 +438,7 @@ async def main():
     ))
     
     print(f"\n✅ Bot ishga tushdi!")
-    print(f"🤖 Bot: @{(await application.bot.get_me()).username}")
-    print(f"📢 Target kanal: @{TARGET_CHANNEL}")
+    print(f"📢 Target kanal: {TARGET_CHANNEL}")
     print("\n📋 Foydalanish:")
     print("1. Botga /start bosing")
     print("2. Telefon raqamingizni yuboring")
