@@ -320,6 +320,8 @@ async def auto_work_loop(chat_id, update):
             await asyncio.sleep(30)
 
 async def real_join(url):
+    global user_client
+
     try:
         # PRIVATE kanal
         if "t.me/+" in url or "joinchat" in url:
@@ -329,23 +331,20 @@ async def real_join(url):
         # PUBLIC kanal
         else:
             username = url.split("/")[-1]
-            entity = await user_client.get_entity(username)
-            await user_client(JoinChannelRequest(entity))
+            await user_client(JoinChannelRequest(username))
 
         print("✅ REAL OBUNA BO‘LDI")
-
-        await asyncio.sleep(random.randint(3,6))
-
         return True
 
     except FloodWaitError as e:
-        print("Flood:", e.seconds)
+        print(f"⚠️ Flood limit: {e.seconds} sekund")
         await asyncio.sleep(e.seconds)
         return False
 
     except Exception as e:
         print("REAL JOIN ERROR:", e)
         return False
+
            
 
 async def check_and_do_tasks(chat_id, update):
@@ -416,7 +415,7 @@ async def check_and_do_tasks(chat_id, update):
 
             # Flood protection
             if join_clicked:
-                await asyncio.sleep(random.randint(10,20))
+                await asyncio.sleep(2)
 
     except FloodWaitError as e:
         raise e
